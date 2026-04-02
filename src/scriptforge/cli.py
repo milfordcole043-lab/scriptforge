@@ -11,6 +11,7 @@ from rich.table import Table
 
 from scriptforge import db
 from scriptforge.engine import analyze_feedback_patterns, build_rewrite_context, build_write_context
+from scriptforge.pipeline import render_script
 
 console = Console()
 
@@ -361,3 +362,16 @@ def analyze(ctx: click.Context) -> None:
             console.print(f"    [red]-[/red] {note}")
 
     console.print("\n[dim]Use 'scriptforge rules --add \"rule\"' to codify patterns into your rulebook.[/dim]\n")
+
+
+# --- render ---
+
+
+@cli.command()
+@click.argument("script_id", type=int)
+@click.option("--dry-run", is_flag=True, help="Show render plan without calling APIs.")
+@click.pass_context
+def render(ctx: click.Context, script_id: int, dry_run: bool) -> None:
+    """Render a script into a finished video."""
+    conn = _get_conn(ctx)
+    render_script(conn, script_id, dry_run=dry_run)
