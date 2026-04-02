@@ -1,0 +1,2 @@
+[console_scripts]
+scriptforge = scriptforge.cli:cli
