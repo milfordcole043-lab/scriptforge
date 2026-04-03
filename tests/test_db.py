@@ -213,17 +213,17 @@ def test_set_voice_profile_upsert(conn: sqlite3.Connection) -> None:
 def test_seed_defaults_rules(conn: sqlite3.Connection) -> None:
     db.seed_defaults(conn)
     rules = db.get_active_rules(conn)
-    assert len(rules) == 15  # 10 original + 5 new character rules (replaced 1 visual rule = net +5)
+    assert len(rules) == 21  # 15 narrative/character + 6 POV rules
 
 
 def test_seed_defaults_voice_profile(conn: sqlite3.Connection) -> None:
     db.seed_defaults(conn)
     profile = db.get_voice_profile(conn)
-    assert len(profile) == 5
+    assert len(profile) == 8
 
 
 def test_seed_defaults_idempotent(conn: sqlite3.Connection) -> None:
     db.seed_defaults(conn)
     db.seed_defaults(conn)
     rules = db.get_active_rules(conn)
-    assert len(rules) == 15
+    assert len(rules) == 21

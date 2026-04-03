@@ -28,6 +28,40 @@ def build_video_prompt(scene: Scene, character: Character | None = None) -> str:
     return ". ".join(parts) + "."
 
 
+def build_pov_video_prompt(scene: Scene, character: Character) -> str:
+    """Build a POV lip-sync video prompt for VEED Fabric."""
+    parts = [
+        f"A {character.gender} in {character.age} with {character.appearance}, "
+        f"wearing {character.clothing}",
+    ]
+    if scene.location:
+        parts.append(scene.location)
+    if scene.character_action:
+        parts.append(scene.character_action)
+    parts.append("Talking directly to camera, clear mouth articulation, natural lip movement")
+    if scene.lighting:
+        parts.append(scene.lighting)
+    parts.append("Phone camera perspective, slight handheld wobble")
+    parts.append("Consistent lighting throughout")
+    return ". ".join(parts) + "."
+
+
+def build_pov_reference_prompt(character: Character, lighting: str = "") -> str:
+    """Build a Flux Pro prompt for a POV selfie reference portrait."""
+    parts = [
+        f"Close-up portrait of a {character.gender} in {character.age} "
+        f"with {character.appearance}, wearing {character.clothing}",
+        "Slight smile with teeth visible, natural expression",
+        "Selfie angle, phone camera perspective, slightly below eye level",
+    ]
+    if lighting:
+        parts.append(lighting)
+    else:
+        parts.append("Soft warm lighting")
+    parts.append("Natural, unposed, cinematic portrait. Consistent lighting throughout")
+    return ". ".join(parts) + "."
+
+
 def build_write_context(
     conn: sqlite3.Connection,
     topic: str,

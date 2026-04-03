@@ -38,6 +38,7 @@ class Scene:
     sound: str
     caption: str
     duration_seconds: int
+    dialogue: str = ""
 
 
 @dataclass
@@ -57,6 +58,7 @@ class Script:
     version: int = 1
     parent_id: int | None = None
     character_id: int | None = None
+    mode: str = "narrator"
     tags: list[str] = field(default_factory=list)
 
     @property
@@ -66,7 +68,8 @@ class Script:
               "character_action": s.character_action, "location": s.location,
               "character_emotion": s.character_emotion, "camera": s.camera,
               "lighting": s.lighting, "motion": s.motion, "sound": s.sound,
-              "caption": s.caption, "duration_seconds": s.duration_seconds}
+              "caption": s.caption, "duration_seconds": s.duration_seconds,
+              "dialogue": s.dialogue}
              for s in self.scenes]
         )
 

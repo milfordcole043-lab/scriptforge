@@ -131,6 +131,16 @@ _DEFAULT_PROMPT_RULES = [
     ("atmosphere", "specify color temperature -- warm amber, cold blue, muted, high contrast", 5),
     ("structure", "one verb per shot, under 80 words per prompt", 7),
     ("avoid", "never include text, labels, or words in image prompts", 9),
+    # Lip sync prompt rules
+    ("lipsync", "always include 'talking directly to camera' in POV video prompts", 8),
+    ("lipsync_mouth", "always include 'clear mouth articulation' and 'natural lip movement'", 8),
+    ("lipsync_body", "keep body action simple during speech -- no complex movements while talking", 7),
+    ("lipsync_ref", "character reference must show teeth visible and slight smile", 7),
+    ("lipsync_motion", "motion intensity low to prevent face morphing during speech", 6),
+    ("lipsync_duration", "shorter clips 3-7s maintain better lip sync than longer ones", 6),
+    ("lipsync_chain", "extract last frame of each clip and use as reference for next clip", 5),
+    ("lipsync_angle", "front-facing or 3/4 angle only for lip sync accuracy", 7),
+    ("lipsync_camera", "phone camera perspective: slightly below eye level, subtle handheld wobble", 6),
 ]
 
 _DEFAULT_RULES = [
@@ -149,6 +159,13 @@ _DEFAULT_RULES = [
     ("Every hook must work visually WITHOUT sound -- 85% of viewers watch on mute", "hook", "narrative arc system"),
     ("Bold on-screen captions on every scene -- 3-5 words that punch", "caption", "narrative arc system"),
     ("Start with the payoff or the feeling, then explain. Inverted structure beats traditional.", "structure", "narrative arc system"),
+    # POV rules
+    ("Write like someone talking to their phone camera at 3 AM. Not polished. Real.", "pov", "pov system"),
+    ("Include natural speech patterns: pauses, restarts, trailing off", "pov", "pov system"),
+    ("The character discovers the science in real time. She reacts to it, doesn't recite it.", "pov", "pov system"),
+    ("First person always in POV mode. 'I can't sleep' not 'you can't sleep'", "pov", "pov system"),
+    ("End with a feeling the viewer carries, not a conclusion. Make them want to comment.", "pov", "pov system"),
+    ("Keep each sentence short enough to be one video chunk (3-7 seconds of speech max)", "pov", "pov system"),
 ]
 
 _DEFAULT_VOICE_PROFILE = [
@@ -157,6 +174,9 @@ _DEFAULT_VOICE_PROFILE = [
     ("tense", "present tense"),
     ("style", "storytelling, not educational. Emotion before information."),
     ("pacing", "slow, cinematic. Pauses are powerful. Silence between beats."),
+    ("pov_person", "first person (I/me/my)"),
+    ("pov_style", "raw confessional, like talking to phone camera at 3 AM"),
+    ("pov_pacing", "natural speech with pauses, restarts, trailing off. NOT polished."),
 ]
 
 
@@ -182,6 +202,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(scripts)").fetchall()}
     if "character_id" not in columns:
         conn.execute("ALTER TABLE scripts ADD COLUMN character_id INTEGER")
+    if "mode" not in columns:
+        conn.execute("ALTER TABLE scripts ADD COLUMN mode TEXT DEFAULT 'narrator'")
 
 
 def seed_defaults(conn: sqlite3.Connection) -> None:
@@ -230,6 +252,7 @@ def add_script(
     parent_id: int | None = None,
     version: int = 1,
     character_id: int | None = None,
+    mode: str = "narrator",
     tags: list[str] | None = None,
 ) -> Script:
     now = datetime.now().isoformat()
@@ -240,10 +263,10 @@ def add_script(
     ).scenes_json
     cur = conn.execute(
         "INSERT INTO scripts (topic, angle, style, duration_target, hook, "
-        "scenes, full_script, word_count, version, parent_id, character_id, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "scenes, full_script, word_count, version, parent_id, character_id, mode, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (topic, angle, style, duration_target, hook,
-         scenes_json, full_script, word_count, version, parent_id, character_id, now),
+         scenes_json, full_script, word_count, version, parent_id, character_id, mode, now),
     )
     script_id = cur.lastrowid
     tag_list = tags or []
@@ -259,15 +282,15 @@ def add_script(
         id=script_id, topic=topic, hook=hook, scenes=scenes,
         full_script=full_script, style=style, duration_target=duration_target,
         angle=angle, word_count=word_count, character_id=character_id,
-        version=version, parent_id=parent_id, created_at=datetime.fromisoformat(now),
-        tags=tag_list,
+        mode=mode, version=version, parent_id=parent_id,
+        created_at=datetime.fromisoformat(now), tags=tag_list,
     )
 
 
 def get_script(conn: sqlite3.Connection, script_id: int) -> Script | None:
     row = conn.execute(
         "SELECT id, topic, angle, style, duration_target, hook, scenes, "
-        "full_script, word_count, rating, feedback, version, parent_id, character_id, created_at "
+        "full_script, word_count, rating, feedback, version, parent_id, character_id, mode, created_at "
         "FROM scripts WHERE id = ?",
         (script_id,),
     ).fetchone()
@@ -281,7 +304,7 @@ def get_script(conn: sqlite3.Connection, script_id: int) -> Script | None:
 def list_scripts(conn: sqlite3.Connection) -> list[Script]:
     rows = conn.execute(
         "SELECT id, topic, angle, style, duration_target, hook, scenes, "
-        "full_script, word_count, rating, feedback, version, parent_id, character_id, created_at "
+        "full_script, word_count, rating, feedback, version, parent_id, character_id, mode, created_at "
         "FROM scripts ORDER BY created_at DESC",
     ).fetchall()
     scripts = [_row_to_script(r) for r in rows]
@@ -311,7 +334,7 @@ def search_scripts(conn: sqlite3.Connection, query: str) -> list[Script]:
     pattern = f"%{query}%"
     rows = conn.execute(
         "SELECT id, topic, angle, style, duration_target, hook, scenes, "
-        "full_script, word_count, rating, feedback, version, parent_id, character_id, created_at "
+        "full_script, word_count, rating, feedback, version, parent_id, character_id, mode, created_at "
         "FROM scripts WHERE topic LIKE ? OR full_script LIKE ? OR hook LIKE ? "
         "ORDER BY created_at DESC",
         (pattern, pattern, pattern),
@@ -630,5 +653,6 @@ def _row_to_script(row: tuple) -> Script:
         version=row[11],
         parent_id=row[12],
         character_id=row[13],
-        created_at=datetime.fromisoformat(row[14]),
+        mode=row[14] or "narrator",
+        created_at=datetime.fromisoformat(row[15]),
     )

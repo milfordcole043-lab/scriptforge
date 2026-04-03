@@ -93,7 +93,7 @@ def test_build_write_context_has_prompt(conn: sqlite3.Connection) -> None:
 def test_build_write_context_has_voice_profile(conn: sqlite3.Connection) -> None:
     db.seed_defaults(conn)
     ctx = build_write_context(conn, topic="Test", style="cinematic", duration_target=45)
-    assert len(ctx["voice_profile"]) == 5
+    assert len(ctx["voice_profile"]) == 8
     assert "VOICE PROFILE" in ctx["prompt"]
 
 

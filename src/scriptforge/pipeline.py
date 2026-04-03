@@ -19,12 +19,21 @@ console = Console()
 
 
 def render_script(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = False) -> Path | None:
-    """Orchestrate the full render pipeline for a script."""
+    """Route to the correct pipeline based on script mode."""
     script = db.get_script(conn, script_id)
     if not script:
         console.print(f"[red]Script #{script_id} not found.[/red]")
         return None
 
+    if script.mode == "pov":
+        from scriptforge.pov_pipeline import render_pov
+        return render_pov(conn, script_id, dry_run=dry_run)
+
+    return _render_narrator(conn, script, dry_run=dry_run)
+
+
+def _render_narrator(conn: sqlite3.Connection, script: Script, *, dry_run: bool = False) -> Path | None:
+    """Orchestrate the narrator render pipeline."""
     # Load character
     character = None
     if script.character_id:
@@ -33,7 +42,7 @@ def render_script(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = F
         console.print("[red]Script has no character. Create one with 'scriptforge character' first.[/red]")
         return None
 
-    output_dir = OUTPUT_DIR / str(script_id)
+    output_dir = OUTPUT_DIR / str(script.id)
 
     if dry_run:
         _show_dry_run(script, character, output_dir)
