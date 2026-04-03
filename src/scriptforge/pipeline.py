@@ -12,7 +12,7 @@ from rich.table import Table
 from scriptforge import db
 from scriptforge.config import ELEVENLABS_API_KEY, FAL_KEY, OUTPUT_DIR
 from scriptforge.engine import build_video_prompt
-from scriptforge.models import Script
+from scriptforge.models import Character, Script
 from scriptforge.researcher import grade_prompt
 
 console = Console()
@@ -25,10 +25,18 @@ def render_script(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = F
         console.print(f"[red]Script #{script_id} not found.[/red]")
         return None
 
+    # Load character
+    character = None
+    if script.character_id:
+        character = db.get_character(conn, script.character_id)
+    if not character:
+        console.print("[red]Script has no character. Create one with 'scriptforge character' first.[/red]")
+        return None
+
     output_dir = OUTPUT_DIR / str(script_id)
 
     if dry_run:
-        _show_dry_run(script, output_dir)
+        _show_dry_run(script, character, output_dir)
         return None
 
     from scriptforge.config import check_keys
@@ -41,26 +49,55 @@ def render_script(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = F
     (output_dir / "images").mkdir(parents=True, exist_ok=True)
     (output_dir / "clips").mkdir(parents=True, exist_ok=True)
 
-    console.print("\n[bold cyan]Step 1/5:[/bold cyan] Generating images...")
-    images = generate_images(script, output_dir)
+    # Step 0: Generate character reference portrait if needed
+    if not character.reference_image_path:
+        console.print("\n[bold cyan]Step 0/6:[/bold cyan] Generating character reference portrait...")
+        ref_path = generate_character_portrait(character, output_dir)
+        db.update_character_image(conn, character.id, str(ref_path))
+        character.reference_image_path = str(ref_path)
 
-    console.print("[bold cyan]Step 2/5:[/bold cyan] Generating video clips...")
-    clips = generate_clips(script, images, output_dir, conn=conn)
+    console.print("\n[bold cyan]Step 1/6:[/bold cyan] Generating scene images...")
+    images = generate_images(script, character, output_dir)
 
-    console.print("[bold cyan]Step 3/5:[/bold cyan] Burning captions...")
+    console.print("[bold cyan]Step 2/6:[/bold cyan] Generating video clips...")
+    clips = generate_clips(script, character, images, output_dir, conn=conn)
+
+    console.print("[bold cyan]Step 3/6:[/bold cyan] Burning captions...")
     captioned = burn_captions(script, clips, output_dir)
 
-    console.print("[bold cyan]Step 4/5:[/bold cyan] Generating voiceover...")
+    console.print("[bold cyan]Step 4/6:[/bold cyan] Generating voiceover...")
     voiceover = generate_voiceover(script, output_dir)
 
-    console.print("[bold cyan]Step 5/5:[/bold cyan] Assembling final video...")
+    console.print("[bold cyan]Step 5/6:[/bold cyan] Assembling final video...")
     final = assemble_video(captioned, voiceover, output_dir)
 
     console.print(f"\n[bold green]Done![/bold green] Video saved to: {final}")
     return final
 
 
-def generate_images(script: Script, output_dir: Path) -> list[Path]:
+def generate_character_portrait(character: Character, output_dir: Path) -> Path:
+    """Generate a neutral reference portrait for character consistency."""
+    import fal_client
+
+    os.environ["FAL_KEY"] = FAL_KEY
+    prompt = (
+        f"Portrait of a {character.gender} in {character.age} with {character.appearance}, "
+        f"wearing {character.clothing}. Neutral expression, soft even lighting, "
+        f"plain background, cinematic portrait photography. Consistent lighting throughout."
+    )
+    result = fal_client.subscribe(
+        "fal-ai/flux-pro/v1.1",
+        arguments={"prompt": prompt, "image_size": "portrait_16_9", "num_images": 1},
+    )
+    image_url = result["images"][0]["url"]
+    ref_path = output_dir / "images" / "character_ref.png"
+    ref_path.parent.mkdir(parents=True, exist_ok=True)
+    urllib.request.urlretrieve(image_url, str(ref_path))
+    console.print(f"    Saved: {ref_path.name}")
+    return ref_path
+
+
+def generate_images(script: Script, character: Character, output_dir: Path) -> list[Path]:
     """Generate a still image for each scene using fal.ai Flux Pro."""
     import fal_client
 
@@ -69,13 +106,10 @@ def generate_images(script: Script, output_dir: Path) -> list[Path]:
 
     for i, scene in enumerate(script.scenes):
         console.print(f"  Scene {i + 1}/{len(script.scenes)} [{scene.beat}]: generating image...")
+        prompt = build_video_prompt(scene, character)
         result = fal_client.subscribe(
             "fal-ai/flux-pro/v1.1",
-            arguments={
-                "prompt": scene.visual,
-                "image_size": "portrait_16_9",
-                "num_images": 1,
-            },
+            arguments={"prompt": prompt, "image_size": "portrait_16_9", "num_images": 1},
         )
         image_url = result["images"][0]["url"]
         image_path = output_dir / "images" / f"scene_{i + 1:02d}.png"
@@ -86,27 +120,24 @@ def generate_images(script: Script, output_dir: Path) -> list[Path]:
     return images
 
 
-def generate_clips(script: Script, images: list[Path], output_dir: Path,
-                    conn: sqlite3.Connection | None = None) -> list[Path]:
+def generate_clips(script: Script, character: Character, images: list[Path],
+                    output_dir: Path, conn: sqlite3.Connection | None = None) -> list[Path]:
     """Animate each scene image into a video clip using fal.ai Kling v3 Pro."""
     import fal_client
 
     os.environ["FAL_KEY"] = FAL_KEY
     clips: list[Path] = []
 
-    # Load prompt rules for grading
     prompt_rules = db.get_prompt_rules(conn) if conn else []
 
     for i, (scene, image_path) in enumerate(zip(script.scenes, images)):
-        # Kling v3 Pro supports 3-15s
         duration = str(max(3, min(15, scene.duration_seconds)))
-        video_prompt = build_video_prompt(scene)
+        video_prompt = build_video_prompt(scene, character)
 
-        # Grade and auto-enhance the prompt
         if prompt_rules:
             score, missing, enhanced = grade_prompt(video_prompt, prompt_rules)
             if score < 70:
-                console.print(f"  Scene {i + 1} prompt score: {score}/100 — auto-enhancing...")
+                console.print(f"  Scene {i + 1} prompt score: {score}/100 -- auto-enhancing...")
                 video_prompt = enhanced
             else:
                 console.print(f"  Scene {i + 1} prompt score: {score}/100")
@@ -213,10 +244,13 @@ def assemble_video(clips: list[Path], voiceover: Path, output_dir: Path) -> Path
     return final_path
 
 
-def _show_dry_run(script: Script, output_dir: Path) -> None:
+def _show_dry_run(script: Script, character: Character, output_dir: Path) -> None:
     """Show what the pipeline would do without calling any APIs."""
     console.print(f"\n[bold yellow]DRY RUN[/bold yellow] -- Script #{script.id}: {script.topic}\n")
 
+    console.print(f"  Character: [bold]{character.name}[/bold] ({character.age}, {character.gender})")
+    console.print(f"  Appearance: {character.appearance}")
+    console.print(f"  Clothing: {character.clothing}")
     console.print(f"  Output directory: {output_dir}")
     console.print(f"  Total scenes: {len(script.scenes)}")
     total_duration = sum(s.duration_seconds for s in script.scenes)
@@ -228,10 +262,10 @@ def _show_dry_run(script: Script, output_dir: Path) -> None:
     table.add_column("#", style="dim")
     table.add_column("Beat")
     table.add_column("Caption")
-    table.add_column("Visual Prompt")
+    table.add_column("Action")
+    table.add_column("Location")
     table.add_column("Camera")
-    table.add_column("Duration")
-    table.add_column("Clip Dur")
+    table.add_column("Dur")
 
     for i, scene in enumerate(script.scenes):
         clip_dur = f"{max(3, min(15, scene.duration_seconds))}s"
@@ -239,15 +273,17 @@ def _show_dry_run(script: Script, output_dir: Path) -> None:
             str(i + 1),
             scene.beat,
             scene.caption,
-            scene.visual[:40] + ("..." if len(scene.visual) > 40 else ""),
+            scene.character_action[:40] + ("..." if len(scene.character_action) > 40 else ""),
+            scene.location[:30] + ("..." if len(scene.location) > 30 else ""),
             scene.camera,
-            f"{scene.duration_seconds}s",
             clip_dur,
         )
 
     console.print(table)
 
-    console.print(f"\n  [bold]Step 1:[/bold] Generate {len(script.scenes)} images via fal.ai Flux Pro (9:16)")
+    has_ref = "yes" if character.reference_image_path else "generate new"
+    console.print(f"\n  [bold]Step 0:[/bold] Character reference portrait ({has_ref})")
+    console.print(f"  [bold]Step 1:[/bold] Generate {len(script.scenes)} scene images via Flux Pro (9:16)")
     console.print(f"  [bold]Step 2:[/bold] Animate {len(script.scenes)} clips via Kling v3 Pro")
     console.print(f"  [bold]Step 3:[/bold] Burn captions onto clips (FFmpeg drawtext)")
     console.print(f"  [bold]Step 4:[/bold] Generate voiceover via ElevenLabs (Brian, eleven_v3)")

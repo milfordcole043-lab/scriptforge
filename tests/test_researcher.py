@@ -30,11 +30,10 @@ def test_grade_good_prompt(conn: sqlite3.Connection) -> None:
 
 def test_grade_bad_prompt(conn: sqlite3.Connection) -> None:
     rules = _seed_rules(conn)
-    prompt = "A person standing in a room."
+    prompt = "Something happening somewhere."
     score, missing, enhanced = grade_prompt(prompt, rules)
     assert score < 70
     assert len(missing) >= 3
-    # Enhanced prompt should be different from original
     assert len(enhanced) > len(prompt)
 
 

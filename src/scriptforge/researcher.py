@@ -12,7 +12,11 @@ from scriptforge.models import PromptRule
 
 _ELEMENT_PATTERNS: dict[str, list[str]] = {
     "subject": ["person", "figure", "object", "face", "hand", "silhouette", "flower", "heart",
-                 "glass", "thread", "orb", "window", "door", "light", "shadow"],
+                 "glass", "thread", "orb", "window", "door", "light", "shadow",
+                 "woman", "man", "girl", "boy", "character"],
+    "location": ["bedroom", "kitchen", "street", "window", "door", "room", "bus",
+                  "rain", "night", "morning", "bathroom", "hallway", "car", "couch",
+                  "bed", "floor", "counter", "desk", "stairs"],
     "camera": ["dolly", "tracking", "crane", "handheld", "whip", "static", "orbital",
                 "close-up", "wide", "overhead", "pov", "pan", "tilt", "zoom"],
     "motion": ["drift", "spread", "lift", "fall", "float", "pulse", "unravel", "scatter",

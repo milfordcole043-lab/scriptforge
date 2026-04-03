@@ -3,18 +3,28 @@ from __future__ import annotations
 import sqlite3
 
 from scriptforge import db
-from scriptforge.models import Scene
+from scriptforge.models import Character, Scene
 
 
-def build_video_prompt(scene: Scene) -> str:
-    """Build a rich video generation prompt from scene fields."""
-    parts = [scene.visual]
+def build_video_prompt(scene: Scene, character: Character | None = None) -> str:
+    """Build a character-driven video generation prompt from scene fields."""
+    parts = []
+    if character:
+        parts.append(
+            f"A {character.gender} in {character.age} with {character.appearance}, "
+            f"wearing {character.clothing}"
+        )
+    if scene.location:
+        parts.append(scene.location)
+    if scene.character_action:
+        parts.append(scene.character_action)
+    if scene.lighting:
+        parts.append(scene.lighting)
     if scene.camera:
         parts.append(scene.camera)
     if scene.motion:
         parts.append(scene.motion)
-    if scene.sound:
-        parts.append(f"Ambient {scene.sound}")
+    parts.append("Consistent lighting throughout")
     return ". ".join(parts) + "."
 
 
@@ -115,13 +125,15 @@ def _build_write_prompt(
     sections.append("\n--- SCENE FORMAT (for each scene) ---")
     sections.append("beat: hook/tension/revelation/resolution")
     sections.append("voiceover: (second person 'you', present tense, storytelling)")
-    sections.append("visual: (cinematic, poetic -- emotion not illustration)")
+    sections.append("character_action: (what the character is physically doing -- small, human gestures)")
+    sections.append("location: (specific real setting -- dark bedroom, messy sheets, kitchen counter)")
+    sections.append("character_emotion: (internal state -- desperate longing, quiet recognition)")
     sections.append("camera: (dolly-in, tracking, crane, handheld, whip pan, static, orbital)")
-    sections.append("motion: (what moves -- particles drift, cracks spread, petals lift)")
-    sections.append("sound: (ambient -- heartbeat, rain, silence, low hum)")
-    sections.append("emotion: (what the viewer should feel)")
-    sections.append("duration: (seconds)")
+    sections.append("lighting: (real light sources -- cold blue phone screen, warm amber dawn through window)")
+    sections.append("motion: (what moves -- thumb trembles, chest rises and falls, light spreads)")
+    sections.append("sound: (ambient -- silence, heartbeat, rain, distant birdsong)")
     sections.append("caption: (3-5 word bold overlay -- must work without sound)")
+    sections.append("duration: (seconds)")
 
     if voice_profile:
         sections.append(_build_voice_section(voice_profile))

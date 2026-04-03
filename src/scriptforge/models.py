@@ -6,19 +6,38 @@ from datetime import datetime
 
 VALID_BEATS = {"hook", "tension", "revelation", "resolution"}
 VALID_CAMERAS = {"dolly-in", "tracking", "crane", "handheld", "whip pan", "static", "orbital"}
+REAL_LIGHT_SOURCES = {
+    "phone", "screen", "neon", "candle", "candlelight", "lamp", "dawn", "sunset",
+    "streetlight", "street lamp", "moonlight", "window", "fluorescent", "fire",
+    "golden hour", "god rays", "backlit", "sun", "led", "lantern",
+}
+
+
+@dataclass
+class Character:
+    id: int
+    name: str
+    age: str
+    gender: str
+    appearance: str
+    clothing: str
+    created_at: datetime
+    reference_image_path: str | None = None
 
 
 @dataclass
 class Scene:
     beat: str
     voiceover: str
-    visual: str
+    character_action: str
+    location: str
+    character_emotion: str
     camera: str
+    lighting: str
     motion: str
     sound: str
-    emotion: str
-    duration_seconds: int
     caption: str
+    duration_seconds: int
 
 
 @dataclass
@@ -37,15 +56,17 @@ class Script:
     feedback: str | None = None
     version: int = 1
     parent_id: int | None = None
+    character_id: int | None = None
     tags: list[str] = field(default_factory=list)
 
     @property
     def scenes_json(self) -> str:
         return json.dumps(
-            [{"beat": s.beat, "voiceover": s.voiceover, "visual": s.visual,
-              "camera": s.camera, "motion": s.motion, "sound": s.sound,
-              "emotion": s.emotion, "duration_seconds": s.duration_seconds,
-              "caption": s.caption}
+            [{"beat": s.beat, "voiceover": s.voiceover,
+              "character_action": s.character_action, "location": s.location,
+              "character_emotion": s.character_emotion, "camera": s.camera,
+              "lighting": s.lighting, "motion": s.motion, "sound": s.sound,
+              "caption": s.caption, "duration_seconds": s.duration_seconds}
              for s in self.scenes]
         )
 
@@ -141,5 +162,18 @@ def validate_script(scenes: list[Scene], full_script: str) -> list[str]:
     for i, s in enumerate(scenes):
         if not s.caption or not s.caption.strip():
             errors.append(f"Scene {i + 1} ({s.beat}) is missing a caption")
+
+    # Check character_action and location
+    for i, s in enumerate(scenes):
+        if not s.character_action or not s.character_action.strip():
+            errors.append(f"Scene {i + 1} ({s.beat}) is missing character_action")
+        if not s.location or not s.location.strip():
+            errors.append(f"Scene {i + 1} ({s.beat}) is missing location")
+
+    # Check lighting has a real light source
+    for i, s in enumerate(scenes):
+        lighting_lower = (s.lighting or "").lower()
+        if not any(source in lighting_lower for source in REAL_LIGHT_SOURCES):
+            errors.append(f"Scene {i + 1} ({s.beat}) lighting must name a real light source")
 
     return errors

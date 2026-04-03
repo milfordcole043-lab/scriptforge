@@ -113,17 +113,24 @@ def view(ctx: click.Context, script_id: int) -> None:
 
     console.print(Panel(header, title=f"Script #{script.id}"))
 
+    if script.character_id:
+        char = db.get_character(conn, script.character_id)
+        if char:
+            console.print(f"\n[bold]Character:[/bold] {char.name} ({char.age}, {char.gender}) -- {char.appearance}, wearing {char.clothing}")
+
     if script.scenes:
         table = Table(title="Scenes")
         table.add_column("#", style="dim")
         table.add_column("Beat")
         table.add_column("Caption")
-        table.add_column("Voiceover")
+        table.add_column("Action")
+        table.add_column("Location")
         table.add_column("Camera")
         table.add_column("Emotion")
         table.add_column("Dur", justify="right")
         for i, s in enumerate(script.scenes, 1):
-            table.add_row(str(i), s.beat, s.caption, s.voiceover, s.camera, s.emotion, f"{s.duration_seconds}s")
+            table.add_row(str(i), s.beat, s.caption, s.character_action[:30],
+                          s.location[:25], s.camera, s.character_emotion, f"{s.duration_seconds}s")
         console.print(table)
 
     if script.full_script:
@@ -306,9 +313,11 @@ def export(ctx: click.Context, script_id: int, output: str | None) -> None:
         content += f"\n[Scene {i} - {s.beat} - {s.duration_seconds}s]\n"
         content += f"CAPTION: {s.caption}\n"
         content += f"VO: {s.voiceover}\n"
-        content += f"VISUAL: {s.visual}\n"
+        content += f"ACTION: {s.character_action}\n"
+        content += f"LOCATION: {s.location}\n"
+        content += f"LIGHTING: {s.lighting}\n"
         content += f"CAMERA: {s.camera} | MOTION: {s.motion} | SOUND: {s.sound}\n"
-        content += f"EMOTION: {s.emotion}\n"
+        content += f"EMOTION: {s.character_emotion}\n"
     content += f"\nFULL SCRIPT:\n{script.full_script}\n"
 
     Path(filename).write_text(content, encoding="utf-8")
@@ -388,6 +397,51 @@ def render(ctx: click.Context, script_id: int, dry_run: bool) -> None:
     """Render a script into a finished video."""
     conn = _get_conn(ctx)
     render_script(conn, script_id, dry_run=dry_run)
+
+
+# --- character ---
+
+
+@cli.command()
+@click.argument("name")
+@click.option("--age", required=True, help="Character age (e.g. 'late 20s').")
+@click.option("--gender", required=True, help="Character gender.")
+@click.option("--appearance", required=True, help="Physical appearance details.")
+@click.option("--clothing", required=True, help="Specific outfit description.")
+@click.pass_context
+def character(ctx: click.Context, name: str, age: str, gender: str,
+              appearance: str, clothing: str) -> None:
+    """Create a character profile for use in scripts."""
+    conn = _get_conn(ctx)
+    char = db.add_character(conn, name=name, age=age, gender=gender,
+                            appearance=appearance, clothing=clothing)
+    console.print(f"\n[green]Character created:[/green] #{char.id} -- {char.name}")
+    console.print(f"  Age: {char.age} | Gender: {char.gender}")
+    console.print(f"  Appearance: {char.appearance}")
+    console.print(f"  Clothing: {char.clothing}")
+    console.print(f"\n[dim]Use --character {char.id} when writing scripts.[/dim]\n")
+
+
+@cli.command("characters")
+@click.pass_context
+def list_characters_cmd(ctx: click.Context) -> None:
+    """List all character profiles."""
+    conn = _get_conn(ctx)
+    chars = db.list_characters(conn)
+    if not chars:
+        console.print("[dim]No characters yet.[/dim]")
+        return
+    table = Table(title="Characters")
+    table.add_column("ID", style="dim")
+    table.add_column("Name")
+    table.add_column("Age")
+    table.add_column("Appearance")
+    table.add_column("Clothing")
+    table.add_column("Portrait")
+    for c in chars:
+        has_ref = "[green]yes[/green]" if c.reference_image_path else "[dim]no[/dim]"
+        table.add_row(str(c.id), c.name, c.age, c.appearance[:40], c.clothing[:30], has_ref)
+    console.print(table)
 
 
 # --- research ---

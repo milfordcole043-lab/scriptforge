@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from scriptforge.models import FeedbackEntry, Finding, Hook, PromptRule, Rule, Scene, Script, VoiceProfile
+from scriptforge.models import Character, FeedbackEntry, Finding, Hook, PromptRule, Rule, Scene, Script, VoiceProfile
 
 DEFAULT_DB = Path.home() / ".scriptforge" / "scriptforge.db"
 
@@ -108,6 +108,19 @@ CREATE TABLE IF NOT EXISTS prompt_rules (
 );
 """
 
+_CREATE_CHARACTER_PROFILES = """
+CREATE TABLE IF NOT EXISTS character_profiles (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                 TEXT    NOT NULL,
+    age                  TEXT    NOT NULL,
+    gender               TEXT    NOT NULL,
+    appearance           TEXT    NOT NULL,
+    clothing             TEXT    NOT NULL,
+    reference_image_path TEXT,
+    created_at           TEXT    NOT NULL
+);
+"""
+
 _DEFAULT_PROMPT_RULES = [
     ("subject", "describe one primary subject per scene, be specific about appearance", 9),
     ("camera", "always specify camera movement -- tracking, dolly, crane, static, handheld", 8),
@@ -127,7 +140,12 @@ _DEFAULT_RULES = [
     ("Science is the twist, not the point. Feeling first, facts second.", "structure", "narrative arc system"),
     ("End with a reframe, not advice. No 'so next time you...' -- just reframe.", "structure", "narrative arc system"),
     ("Short sentences for impact. Questions to pull the viewer in.", "pacing", "narrative arc system"),
-    ("Visuals carry emotion, not illustration. Don't just show what the words say.", "visual", "narrative arc system"),
+    ("Every scene shows the CHARACTER experiencing the emotion. The viewer watches a person go through it, not an abstract concept.", "character", "character system"),
+    ("Describe real locations the viewer recognizes -- bedrooms, kitchens, bus stops, rain-soaked streets. Never abstract voids.", "location", "character system"),
+    ("Character's clothing stays identical across all scenes for consistency.", "character", "character system"),
+    ("Light sources must be physically real -- phone screens, street lamps, dawn through a window. Never unnamed 'dramatic lighting'.", "lighting", "character system"),
+    ("Character actions must be small and human -- a thumb hovering, a head dropping, eyes closing. Never grand gestures.", "character", "character system"),
+    ("Every scene is a moment in ONE continuous night/day. Time progresses through the video.", "structure", "character system"),
     ("Every hook must work visually WITHOUT sound -- 85% of viewers watch on mute", "hook", "narrative arc system"),
     ("Bold on-screen captions on every scene -- 3-5 words that punch", "caption", "narrative arc system"),
     ("Start with the payoff or the feeling, then explain. Inverted structure beats traditional.", "structure", "narrative arc system"),
@@ -154,8 +172,16 @@ def connect(db_path: Path = DEFAULT_DB) -> sqlite3.Connection:
     conn.execute(_CREATE_VOICE_PROFILE)
     conn.execute(_CREATE_RESEARCH_FINDINGS)
     conn.execute(_CREATE_PROMPT_RULES)
+    conn.execute(_CREATE_CHARACTER_PROFILES)
+    _migrate(conn)
     conn.commit()
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(scripts)").fetchall()}
+    if "character_id" not in columns:
+        conn.execute("ALTER TABLE scripts ADD COLUMN character_id INTEGER")
 
 
 def seed_defaults(conn: sqlite3.Connection) -> None:
@@ -203,6 +229,7 @@ def add_script(
     angle: str | None = None,
     parent_id: int | None = None,
     version: int = 1,
+    character_id: int | None = None,
     tags: list[str] | None = None,
 ) -> Script:
     now = datetime.now().isoformat()
@@ -213,16 +240,15 @@ def add_script(
     ).scenes_json
     cur = conn.execute(
         "INSERT INTO scripts (topic, angle, style, duration_target, hook, "
-        "scenes, full_script, word_count, version, parent_id, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "scenes, full_script, word_count, version, parent_id, character_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (topic, angle, style, duration_target, hook,
-         scenes_json, full_script, word_count, version, parent_id, now),
+         scenes_json, full_script, word_count, version, parent_id, character_id, now),
     )
     script_id = cur.lastrowid
     tag_list = tags or []
     for tag in tag_list:
         conn.execute("INSERT INTO script_tags (script_id, tag) VALUES (?, ?)", (script_id, tag))
-    # Auto-save the hook
     hook_beat = scenes[0].beat if scenes else "hook"
     conn.execute(
         "INSERT INTO hooks (text, script_id, style, created_at) VALUES (?, ?, ?, ?)",
@@ -232,7 +258,7 @@ def add_script(
     return Script(
         id=script_id, topic=topic, hook=hook, scenes=scenes,
         full_script=full_script, style=style, duration_target=duration_target,
-        angle=angle, word_count=word_count,
+        angle=angle, word_count=word_count, character_id=character_id,
         version=version, parent_id=parent_id, created_at=datetime.fromisoformat(now),
         tags=tag_list,
     )
@@ -241,7 +267,7 @@ def add_script(
 def get_script(conn: sqlite3.Connection, script_id: int) -> Script | None:
     row = conn.execute(
         "SELECT id, topic, angle, style, duration_target, hook, scenes, "
-        "full_script, word_count, rating, feedback, version, parent_id, created_at "
+        "full_script, word_count, rating, feedback, version, parent_id, character_id, created_at "
         "FROM scripts WHERE id = ?",
         (script_id,),
     ).fetchone()
@@ -255,7 +281,7 @@ def get_script(conn: sqlite3.Connection, script_id: int) -> Script | None:
 def list_scripts(conn: sqlite3.Connection) -> list[Script]:
     rows = conn.execute(
         "SELECT id, topic, angle, style, duration_target, hook, scenes, "
-        "full_script, word_count, rating, feedback, version, parent_id, created_at "
+        "full_script, word_count, rating, feedback, version, parent_id, character_id, created_at "
         "FROM scripts ORDER BY created_at DESC",
     ).fetchall()
     scripts = [_row_to_script(r) for r in rows]
@@ -285,7 +311,7 @@ def search_scripts(conn: sqlite3.Connection, query: str) -> list[Script]:
     pattern = f"%{query}%"
     rows = conn.execute(
         "SELECT id, topic, angle, style, duration_target, hook, scenes, "
-        "full_script, word_count, rating, feedback, version, parent_id, created_at "
+        "full_script, word_count, rating, feedback, version, parent_id, character_id, created_at "
         "FROM scripts WHERE topic LIKE ? OR full_script LIKE ? OR hook LIKE ? "
         "ORDER BY created_at DESC",
         (pattern, pattern, pattern),
@@ -375,6 +401,55 @@ def get_active_rules(conn: sqlite3.Connection) -> list[Rule]:
 
 def deactivate_rule(conn: sqlite3.Connection, rule_id: int) -> bool:
     cur = conn.execute("UPDATE rulebook SET active = 0 WHERE id = ?", (rule_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+# --- Characters ---
+
+
+def add_character(conn: sqlite3.Connection, name: str, age: str, gender: str,
+                  appearance: str, clothing: str) -> Character:
+    now = datetime.now().isoformat()
+    cur = conn.execute(
+        "INSERT INTO character_profiles (name, age, gender, appearance, clothing, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (name, age, gender, appearance, clothing, now),
+    )
+    conn.commit()
+    return Character(id=cur.lastrowid, name=name, age=age, gender=gender,
+                     appearance=appearance, clothing=clothing,
+                     created_at=datetime.fromisoformat(now))
+
+
+def get_character(conn: sqlite3.Connection, character_id: int) -> Character | None:
+    row = conn.execute(
+        "SELECT id, name, age, gender, appearance, clothing, reference_image_path, created_at "
+        "FROM character_profiles WHERE id = ?",
+        (character_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return Character(id=row[0], name=row[1], age=row[2], gender=row[3],
+                     appearance=row[4], clothing=row[5], reference_image_path=row[6],
+                     created_at=datetime.fromisoformat(row[7]))
+
+
+def list_characters(conn: sqlite3.Connection) -> list[Character]:
+    rows = conn.execute(
+        "SELECT id, name, age, gender, appearance, clothing, reference_image_path, created_at "
+        "FROM character_profiles ORDER BY created_at DESC",
+    ).fetchall()
+    return [Character(id=r[0], name=r[1], age=r[2], gender=r[3], appearance=r[4],
+                      clothing=r[5], reference_image_path=r[6],
+                      created_at=datetime.fromisoformat(r[7])) for r in rows]
+
+
+def update_character_image(conn: sqlite3.Connection, character_id: int, path: str) -> bool:
+    cur = conn.execute(
+        "UPDATE character_profiles SET reference_image_path = ? WHERE id = ?",
+        (path, character_id),
+    )
     conn.commit()
     return cur.rowcount > 0
 
@@ -554,5 +629,6 @@ def _row_to_script(row: tuple) -> Script:
         feedback=row[10],
         version=row[11],
         parent_id=row[12],
-        created_at=datetime.fromisoformat(row[13]),
+        character_id=row[13],
+        created_at=datetime.fromisoformat(row[14]),
     )
