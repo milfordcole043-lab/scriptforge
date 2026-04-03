@@ -388,3 +388,124 @@ def render(ctx: click.Context, script_id: int, dry_run: bool) -> None:
     """Render a script into a finished video."""
     conn = _get_conn(ctx)
     render_script(conn, script_id, dry_run=dry_run)
+
+
+# --- research ---
+
+
+@cli.command()
+@click.argument("topic")
+@click.pass_context
+def research(ctx: click.Context, topic: str) -> None:
+    """Research a topic and store findings."""
+    from scriptforge.researcher import extract_findings_from_text
+    conn = _get_conn(ctx)
+    console.print(f"\n[bold]Researching:[/bold] {topic}")
+    console.print("[dim]Provide your research text, and findings will be extracted and stored.[/dim]")
+    console.print("[dim]Use this command after gathering research via web search.[/dim]\n")
+    # This command is designed to be called by Claude Code with research context
+    # The actual research text comes from Claude's web search results
+    console.print(f"[yellow]Topic '{topic}' registered.[/yellow] Use Claude Code to research and feed findings.")
+
+
+# --- transcript ---
+
+
+@cli.command()
+@click.argument("url")
+@click.pass_context
+def transcript(ctx: click.Context, url: str) -> None:
+    """Pull and analyze a YouTube video transcript."""
+    from scriptforge.researcher import pull_youtube_transcript, extract_findings_from_text
+    conn = _get_conn(ctx)
+
+    console.print(f"\n[bold]Pulling transcript:[/bold] {url}")
+    text = pull_youtube_transcript(url)
+    if not text:
+        console.print("[red]Could not fetch transcript. Check the URL or video availability.[/red]")
+        return
+
+    console.print(f"  Transcript length: {len(text.split())} words")
+    findings = extract_findings_from_text(text, topic=f"YouTube: {url}", source_url=url)
+
+    for f in findings:
+        db.add_finding(conn, topic=f["topic"], finding=f["finding"], category=f["category"],
+                       source_url=f.get("source_url"), source_title=f.get("source_title"),
+                       confidence=f.get("confidence", "medium"))
+
+    console.print(f"  [green]Extracted {len(findings)} findings.[/green]\n")
+
+
+# --- findings ---
+
+
+@cli.command()
+@click.option("--apply", "apply_findings", is_flag=True, help="Apply unapplied findings to rulebook.")
+@click.option("--category", "-c", default=None, help="Filter by category.")
+@click.pass_context
+def findings(ctx: click.Context, apply_findings: bool, category: str | None) -> None:
+    """List research findings, or apply them to the rulebook."""
+    conn = _get_conn(ctx)
+
+    if apply_findings:
+        unapplied = db.get_unapplied_findings(conn)
+        if not unapplied:
+            console.print("[dim]No unapplied findings.[/dim]")
+            return
+        applied = 0
+        for f in unapplied:
+            if f.confidence == "high":
+                db.add_rule(conn, rule=f.finding, category=f.category, source=f.source_url or f.topic)
+                db.mark_finding_applied(conn, f.id)
+                applied += 1
+                console.print(f"  [green]+[/green] {f.finding}")
+        console.print(f"\n[green]Applied {applied} high-confidence findings to rulebook.[/green]")
+        return
+
+    all_findings = db.get_findings(conn, category=category)
+    if not all_findings:
+        console.print("[dim]No findings yet. Use 'scriptforge research' or 'scriptforge transcript' to gather data.[/dim]")
+        return
+
+    table = Table(title="Research Findings")
+    table.add_column("ID", style="dim")
+    table.add_column("Category")
+    table.add_column("Finding")
+    table.add_column("Confidence")
+    table.add_column("Applied")
+    for f in all_findings:
+        applied_str = "[green]yes[/green]" if f.applied else "[dim]no[/dim]"
+        table.add_row(str(f.id), f.category, f.finding[:80], f.confidence, applied_str)
+    console.print(table)
+
+
+# --- grade ---
+
+
+@cli.command()
+@click.argument("prompt_text")
+@click.pass_context
+def grade(ctx: click.Context, prompt_text: str) -> None:
+    """Score a video prompt and show what's missing."""
+    from scriptforge.researcher import grade_prompt
+    conn = _get_conn(ctx)
+    prompt_rules = db.get_prompt_rules(conn)
+
+    if not prompt_rules:
+        console.print("[dim]No prompt rules loaded. Run seed_defaults first.[/dim]")
+        return
+
+    score, missing, enhanced = grade_prompt(prompt_text, prompt_rules)
+
+    color = "green" if score >= 70 else "yellow" if score >= 50 else "red"
+    console.print(f"\n[bold]Prompt Score:[/bold] [{color}]{score}/100[/{color}]\n")
+
+    if missing:
+        console.print("[bold]Missing elements:[/bold]")
+        for m in missing:
+            console.print(f"  [red]-[/red] {m}")
+
+    if score < 70:
+        console.print(f"\n[bold]Enhanced prompt:[/bold]\n{enhanced}")
+
+    console.print()

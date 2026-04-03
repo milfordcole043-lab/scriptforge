@@ -96,6 +96,30 @@ class VoiceProfile:
     active: bool = True
 
 
+@dataclass
+class Finding:
+    id: int
+    topic: str
+    finding: str
+    category: str
+    created_at: datetime
+    source_url: str | None = None
+    source_title: str | None = None
+    confidence: str = "medium"
+    applied: bool = False
+
+
+@dataclass
+class PromptRule:
+    id: int
+    element: str
+    rule: str
+    weight: int
+    created_at: datetime
+    source: str | None = None
+    active: bool = True
+
+
 def validate_script(scenes: list[Scene], full_script: str) -> list[str]:
     """Validate a script against narrative arc rules. Returns list of errors."""
     errors: list[str] = []

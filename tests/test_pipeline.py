@@ -72,7 +72,7 @@ def test_render_dry_run_shows_steps(tmp_path: Path) -> None:
     script_id = _seed_script(tmp_path)
     result = _invoke(tmp_path, ["render", str(script_id), "--dry-run"])
     assert "Flux Pro" in result.output
-    assert "Seedance" in result.output
+    assert "Kling" in result.output
     assert "ElevenLabs" in result.output
     assert "FFmpeg" in result.output
     assert "caption" in result.output.lower()

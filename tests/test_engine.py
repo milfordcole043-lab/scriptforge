@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 from scriptforge import db
-from scriptforge.engine import build_write_context, build_rewrite_context, analyze_feedback_patterns, build_seedance_prompt
+from scriptforge.engine import build_write_context, build_rewrite_context, analyze_feedback_patterns, build_video_prompt
 from scriptforge.models import Scene
 
 
@@ -39,20 +39,20 @@ def _seed_data(conn: sqlite3.Connection) -> None:
 # --- Seedance prompt builder ---
 
 
-def test_build_seedance_prompt() -> None:
+def test_build_video_prompt() -> None:
     scene = _scene()
-    prompt = build_seedance_prompt(scene)
+    prompt = build_video_prompt(scene)
     assert "Dark water with embers" in prompt
     assert "dolly-in" in prompt
     assert "particles drift outward" in prompt
     assert "heartbeat" in prompt
 
 
-def test_build_seedance_prompt_minimal() -> None:
+def test_build_video_prompt_minimal() -> None:
     scene = Scene(beat="hook", voiceover="V", visual="Simple visual",
                   camera="", motion="", sound="", emotion="wonder",
                   duration_seconds=5, caption="CAP")
-    prompt = build_seedance_prompt(scene)
+    prompt = build_video_prompt(scene)
     assert "Simple visual" in prompt
 
 

@@ -9,6 +9,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "fal-client>=0.5",
     "elevenlabs>=1.0",
+    "youtube-transcript-api>=1.0",
 ]
 
 [project.scripts]

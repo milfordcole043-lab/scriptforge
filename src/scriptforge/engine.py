@@ -6,8 +6,8 @@ from scriptforge import db
 from scriptforge.models import Scene
 
 
-def build_seedance_prompt(scene: Scene) -> str:
-    """Build a rich Seedance video prompt from scene fields."""
+def build_video_prompt(scene: Scene) -> str:
+    """Build a rich video generation prompt from scene fields."""
     parts = [scene.visual]
     if scene.camera:
         parts.append(scene.camera)

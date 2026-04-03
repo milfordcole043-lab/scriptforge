@@ -11,8 +11,9 @@ from rich.table import Table
 
 from scriptforge import db
 from scriptforge.config import ELEVENLABS_API_KEY, FAL_KEY, OUTPUT_DIR
-from scriptforge.engine import build_seedance_prompt
+from scriptforge.engine import build_video_prompt
 from scriptforge.models import Script
+from scriptforge.researcher import grade_prompt
 
 console = Console()
 
@@ -44,7 +45,7 @@ def render_script(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = F
     images = generate_images(script, output_dir)
 
     console.print("[bold cyan]Step 2/5:[/bold cyan] Generating video clips...")
-    clips = generate_clips(script, images, output_dir)
+    clips = generate_clips(script, images, output_dir, conn=conn)
 
     console.print("[bold cyan]Step 3/5:[/bold cyan] Burning captions...")
     captioned = burn_captions(script, clips, output_dir)
@@ -85,28 +86,41 @@ def generate_images(script: Script, output_dir: Path) -> list[Path]:
     return images
 
 
-def generate_clips(script: Script, images: list[Path], output_dir: Path) -> list[Path]:
-    """Animate each scene image into a video clip using fal.ai Seedance 1.5 Pro."""
+def generate_clips(script: Script, images: list[Path], output_dir: Path,
+                    conn: sqlite3.Connection | None = None) -> list[Path]:
+    """Animate each scene image into a video clip using fal.ai Kling v3 Pro."""
     import fal_client
 
     os.environ["FAL_KEY"] = FAL_KEY
     clips: list[Path] = []
 
+    # Load prompt rules for grading
+    prompt_rules = db.get_prompt_rules(conn) if conn else []
+
     for i, (scene, image_path) in enumerate(zip(script.scenes, images)):
-        duration = str(max(4, min(12, scene.duration_seconds)))
-        seedance_prompt = build_seedance_prompt(scene)
+        # Kling v3 Pro supports 3-15s
+        duration = str(max(3, min(15, scene.duration_seconds)))
+        video_prompt = build_video_prompt(scene)
+
+        # Grade and auto-enhance the prompt
+        if prompt_rules:
+            score, missing, enhanced = grade_prompt(video_prompt, prompt_rules)
+            if score < 70:
+                console.print(f"  Scene {i + 1} prompt score: {score}/100 — auto-enhancing...")
+                video_prompt = enhanced
+            else:
+                console.print(f"  Scene {i + 1} prompt score: {score}/100")
+
         console.print(f"  Scene {i + 1}/{len(script.scenes)} [{scene.beat}]: generating clip ({duration}s)...")
 
         image_url = fal_client.upload_file(str(image_path))
 
         result = fal_client.subscribe(
-            "fal-ai/bytedance/seedance/v1.5/pro/image-to-video",
+            "fal-ai/kling-video/v3/pro/image-to-video",
             arguments={
-                "image_url": image_url,
-                "prompt": seedance_prompt,
+                "start_image_url": image_url,
+                "prompt": video_prompt,
                 "duration": duration,
-                "aspect_ratio": "9:16",
-                "resolution": "1080p",
                 "generate_audio": False,
             },
         )
@@ -220,7 +234,7 @@ def _show_dry_run(script: Script, output_dir: Path) -> None:
     table.add_column("Clip Dur")
 
     for i, scene in enumerate(script.scenes):
-        clip_dur = f"{max(4, min(12, scene.duration_seconds))}s"
+        clip_dur = f"{max(3, min(15, scene.duration_seconds))}s"
         table.add_row(
             str(i + 1),
             scene.beat,
@@ -234,7 +248,7 @@ def _show_dry_run(script: Script, output_dir: Path) -> None:
     console.print(table)
 
     console.print(f"\n  [bold]Step 1:[/bold] Generate {len(script.scenes)} images via fal.ai Flux Pro (9:16)")
-    console.print(f"  [bold]Step 2:[/bold] Animate {len(script.scenes)} clips via Seedance 1.5 Pro (1080p)")
+    console.print(f"  [bold]Step 2:[/bold] Animate {len(script.scenes)} clips via Kling v3 Pro")
     console.print(f"  [bold]Step 3:[/bold] Burn captions onto clips (FFmpeg drawtext)")
     console.print(f"  [bold]Step 4:[/bold] Generate voiceover via ElevenLabs (Brian, eleven_v3)")
     console.print(f"  [bold]Step 5:[/bold] Assemble with FFmpeg -> final.mp4")

@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from scriptforge.models import FeedbackEntry, Hook, Rule, Scene, Script, VoiceProfile
+from scriptforge.models import FeedbackEntry, Finding, Hook, PromptRule, Rule, Scene, Script, VoiceProfile
 
 DEFAULT_DB = Path.home() / ".scriptforge" / "scriptforge.db"
 
@@ -82,6 +82,44 @@ CREATE TABLE IF NOT EXISTS voice_profile (
 );
 """
 
+_CREATE_RESEARCH_FINDINGS = """
+CREATE TABLE IF NOT EXISTS research_findings (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic        TEXT    NOT NULL,
+    source_url   TEXT,
+    source_title TEXT,
+    finding      TEXT    NOT NULL,
+    category     TEXT    NOT NULL,
+    confidence   TEXT    DEFAULT 'medium',
+    applied      INTEGER DEFAULT 0,
+    created_at   TEXT    NOT NULL
+);
+"""
+
+_CREATE_PROMPT_RULES = """
+CREATE TABLE IF NOT EXISTS prompt_rules (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    element    TEXT    NOT NULL,
+    rule       TEXT    NOT NULL,
+    weight     INTEGER DEFAULT 5,
+    source     TEXT,
+    active     INTEGER DEFAULT 1,
+    created_at TEXT    NOT NULL
+);
+"""
+
+_DEFAULT_PROMPT_RULES = [
+    ("subject", "describe one primary subject per scene, be specific about appearance", 9),
+    ("camera", "always specify camera movement -- tracking, dolly, crane, static, handheld", 8),
+    ("motion", "describe what moves and add a motion endpoint -- where does the movement end?", 8),
+    ("lighting", "specify light quality -- golden hour, soft key, god rays, neon, cold blue", 7),
+    ("sound", "include ambient sound description -- silence, heartbeat, rain, distant birdsong", 6),
+    ("style", "add a film style -- cinematic, documentary, film noir, 35mm grain", 6),
+    ("atmosphere", "specify color temperature -- warm amber, cold blue, muted, high contrast", 5),
+    ("structure", "one verb per shot, under 80 words per prompt", 7),
+    ("avoid", "never include text, labels, or words in image prompts", 9),
+]
+
 _DEFAULT_RULES = [
     ("Start in a moment, not a topic. Never open with 'Did you know' or 'Scientists found'", "storytelling", "narrative arc system"),
     ("Use 'you' like a mirror -- second person, present tense, always", "voice", "narrative arc system"),
@@ -114,6 +152,8 @@ def connect(db_path: Path = DEFAULT_DB) -> sqlite3.Connection:
     conn.execute(_CREATE_FEEDBACK_LOG)
     conn.execute(_CREATE_SCRIPT_TAGS)
     conn.execute(_CREATE_VOICE_PROFILE)
+    conn.execute(_CREATE_RESEARCH_FINDINGS)
+    conn.execute(_CREATE_PROMPT_RULES)
     conn.commit()
     return conn
 
@@ -136,6 +176,15 @@ def seed_defaults(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "INSERT INTO voice_profile (attribute, value, created_at) VALUES (?, ?, ?)",
                 (attribute, value, now),
+            )
+
+    pr_count = conn.execute("SELECT COUNT(*) FROM prompt_rules").fetchone()[0]
+    if pr_count == 0:
+        now = datetime.now().isoformat()
+        for element, rule, weight in _DEFAULT_PROMPT_RULES:
+            conn.execute(
+                "INSERT INTO prompt_rules (element, rule, weight, source, created_at) VALUES (?, ?, ?, ?, ?)",
+                (element, rule, weight, "default seed", now),
             )
     conn.commit()
 
@@ -353,6 +402,87 @@ def set_voice_profile(conn: sqlite3.Connection, attribute: str, value: str) -> V
         (attribute,),
     ).fetchone()
     return VoiceProfile(id=row[0], attribute=row[1], value=row[2], active=bool(row[3]))
+
+
+# --- Research Findings ---
+
+
+def add_finding(
+    conn: sqlite3.Connection,
+    topic: str,
+    finding: str,
+    category: str,
+    source_url: str | None = None,
+    source_title: str | None = None,
+    confidence: str = "medium",
+) -> Finding:
+    now = datetime.now().isoformat()
+    cur = conn.execute(
+        "INSERT INTO research_findings (topic, source_url, source_title, finding, category, confidence, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (topic, source_url, source_title, finding, category, confidence, now),
+    )
+    conn.commit()
+    return Finding(id=cur.lastrowid, topic=topic, finding=finding, category=category,
+                   source_url=source_url, source_title=source_title, confidence=confidence,
+                   created_at=datetime.fromisoformat(now))
+
+
+def get_findings(conn: sqlite3.Connection, category: str | None = None) -> list[Finding]:
+    if category:
+        rows = conn.execute(
+            "SELECT id, topic, finding, category, source_url, source_title, confidence, applied, created_at "
+            "FROM research_findings WHERE category = ? ORDER BY created_at DESC",
+            (category,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, topic, finding, category, source_url, source_title, confidence, applied, created_at "
+            "FROM research_findings ORDER BY category, created_at DESC",
+        ).fetchall()
+    return [Finding(id=r[0], topic=r[1], finding=r[2], category=r[3], source_url=r[4],
+                    source_title=r[5], confidence=r[6], applied=bool(r[7]),
+                    created_at=datetime.fromisoformat(r[8])) for r in rows]
+
+
+def get_unapplied_findings(conn: sqlite3.Connection) -> list[Finding]:
+    rows = conn.execute(
+        "SELECT id, topic, finding, category, source_url, source_title, confidence, applied, created_at "
+        "FROM research_findings WHERE applied = 0 ORDER BY confidence DESC, created_at DESC",
+    ).fetchall()
+    return [Finding(id=r[0], topic=r[1], finding=r[2], category=r[3], source_url=r[4],
+                    source_title=r[5], confidence=r[6], applied=bool(r[7]),
+                    created_at=datetime.fromisoformat(r[8])) for r in rows]
+
+
+def mark_finding_applied(conn: sqlite3.Connection, finding_id: int) -> bool:
+    cur = conn.execute("UPDATE research_findings SET applied = 1 WHERE id = ?", (finding_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+# --- Prompt Rules ---
+
+
+def get_prompt_rules(conn: sqlite3.Connection) -> list[PromptRule]:
+    rows = conn.execute(
+        "SELECT id, element, rule, weight, source, active, created_at FROM prompt_rules "
+        "WHERE active = 1 ORDER BY weight DESC",
+    ).fetchall()
+    return [PromptRule(id=r[0], element=r[1], rule=r[2], weight=r[3], source=r[4],
+                       active=bool(r[5]), created_at=datetime.fromisoformat(r[6])) for r in rows]
+
+
+def add_prompt_rule(conn: sqlite3.Connection, element: str, rule: str, weight: int = 5,
+                    source: str | None = None) -> PromptRule:
+    now = datetime.now().isoformat()
+    cur = conn.execute(
+        "INSERT INTO prompt_rules (element, rule, weight, source, created_at) VALUES (?, ?, ?, ?, ?)",
+        (element, rule, weight, source, now),
+    )
+    conn.commit()
+    return PromptRule(id=cur.lastrowid, element=element, rule=rule, weight=weight,
+                      source=source, created_at=datetime.fromisoformat(now))
 
 
 # --- Stats ---
