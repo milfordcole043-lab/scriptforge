@@ -12,11 +12,6 @@ def _invoke(tmp_path: Path, args: list[str] | None = None) -> object:
     return runner.invoke(cli, ["--db-path", str(tmp_path / "test.db")] + (args or []))
 
 
-def _seed_script(tmp_path: Path) -> None:
-    """Add a script via CLI for testing."""
-    _invoke(tmp_path, ["write", "AI basics", "--no-generate"])
-
-
 # --- write ---
 
 
@@ -31,6 +26,20 @@ def test_write_with_style(tmp_path: Path) -> None:
     result = _invoke(tmp_path, ["write", "Coffee history", "--style", "story", "--no-generate"])
     assert result.exit_code == 0
     assert "story" in result.output.lower()
+
+
+def test_write_shows_voice_profile(tmp_path: Path) -> None:
+    result = _invoke(tmp_path, ["write", "Test topic", "--no-generate"])
+    assert result.exit_code == 0
+    # seed_defaults runs on connect, so voice profile should show
+    assert "tone" in result.output.lower()
+
+
+def test_write_shows_seeded_rules(tmp_path: Path) -> None:
+    result = _invoke(tmp_path, ["write", "Test topic", "--no-generate"])
+    assert result.exit_code == 0
+    assert "Rulebook" in result.output
+    assert "10 rules" in result.output
 
 
 # --- view ---
@@ -70,10 +79,11 @@ def test_hooks_empty(tmp_path: Path) -> None:
 # --- rules ---
 
 
-def test_rules_empty(tmp_path: Path) -> None:
+def test_rules_shows_seeded(tmp_path: Path) -> None:
     result = _invoke(tmp_path, ["rules"])
     assert result.exit_code == 0
-    assert "No rules" in result.output or "No active" in result.output
+    # Should have seeded 10 rules
+    assert "Rulebook" in result.output
 
 
 def test_rules_add_and_list(tmp_path: Path) -> None:

@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from scriptforge.models import FeedbackEntry, Hook, Rule, Scene, Script
+from scriptforge.models import FeedbackEntry, Hook, Rule, Scene, Script, VoiceProfile
 
 DEFAULT_DB = Path.home() / ".scriptforge" / "scriptforge.db"
 
@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS scripts (
     topic           TEXT    NOT NULL,
     angle           TEXT,
     style           TEXT    DEFAULT 'educational',
-    duration_target INTEGER DEFAULT 60,
+    duration_target INTEGER DEFAULT 45,
     hook            TEXT    NOT NULL,
     hook_style      TEXT,
     scenes          TEXT    NOT NULL,
@@ -72,6 +72,37 @@ CREATE TABLE IF NOT EXISTS script_tags (
 );
 """
 
+_CREATE_VOICE_PROFILE = """
+CREATE TABLE IF NOT EXISTS voice_profile (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    attribute  TEXT    NOT NULL UNIQUE,
+    value      TEXT    NOT NULL,
+    active     INTEGER DEFAULT 1,
+    created_at TEXT    NOT NULL
+);
+"""
+
+_DEFAULT_RULES = [
+    ("Start in a moment, not a topic. Never open with 'Did you know' or 'Scientists found'", "storytelling", "narrative arc system"),
+    ("Use 'you' like a mirror -- second person, present tense, always", "voice", "narrative arc system"),
+    ("One emotion per scene. Don't mix.", "emotion", "narrative arc system"),
+    ("Science is the twist, not the point. Feeling first, facts second.", "structure", "narrative arc system"),
+    ("End with a reframe, not advice. No 'so next time you...' -- just reframe.", "structure", "narrative arc system"),
+    ("Short sentences for impact. Questions to pull the viewer in.", "pacing", "narrative arc system"),
+    ("Visuals carry emotion, not illustration. Don't just show what the words say.", "visual", "narrative arc system"),
+    ("Every hook must work visually WITHOUT sound -- 85% of viewers watch on mute", "hook", "narrative arc system"),
+    ("Bold on-screen captions on every scene -- 3-5 words that punch", "caption", "narrative arc system"),
+    ("Start with the payoff or the feeling, then explain. Inverted structure beats traditional.", "structure", "narrative arc system"),
+]
+
+_DEFAULT_VOICE_PROFILE = [
+    ("tone", "warm and personal, like telling a friend something that changed how you see the world"),
+    ("person", "second person (you/your)"),
+    ("tense", "present tense"),
+    ("style", "storytelling, not educational. Emotion before information."),
+    ("pacing", "slow, cinematic. Pauses are powerful. Silence between beats."),
+]
+
 
 def connect(db_path: Path = DEFAULT_DB) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -82,8 +113,31 @@ def connect(db_path: Path = DEFAULT_DB) -> sqlite3.Connection:
     conn.execute(_CREATE_RULEBOOK)
     conn.execute(_CREATE_FEEDBACK_LOG)
     conn.execute(_CREATE_SCRIPT_TAGS)
+    conn.execute(_CREATE_VOICE_PROFILE)
     conn.commit()
     return conn
+
+
+def seed_defaults(conn: sqlite3.Connection) -> None:
+    """Seed default rules and voice profile if tables are empty. Idempotent."""
+    rule_count = conn.execute("SELECT COUNT(*) FROM rulebook").fetchone()[0]
+    if rule_count == 0:
+        now = datetime.now().isoformat()
+        for rule, category, source in _DEFAULT_RULES:
+            conn.execute(
+                "INSERT INTO rulebook (rule, category, source, created_at) VALUES (?, ?, ?, ?)",
+                (rule, category, source, now),
+            )
+
+    profile_count = conn.execute("SELECT COUNT(*) FROM voice_profile").fetchone()[0]
+    if profile_count == 0:
+        now = datetime.now().isoformat()
+        for attribute, value in _DEFAULT_VOICE_PROFILE:
+            conn.execute(
+                "INSERT INTO voice_profile (attribute, value, created_at) VALUES (?, ?, ?)",
+                (attribute, value, now),
+            )
+    conn.commit()
 
 
 # --- Scripts ---
@@ -96,8 +150,7 @@ def add_script(
     scenes: list[Scene],
     full_script: str,
     style: str = "educational",
-    duration_target: int = 60,
-    hook_style: str | None = None,
+    duration_target: int = 45,
     angle: str | None = None,
     parent_id: int | None = None,
     version: int = 1,
@@ -110,10 +163,10 @@ def add_script(
         full_script=full_script, created_at=datetime.now(),
     ).scenes_json
     cur = conn.execute(
-        "INSERT INTO scripts (topic, angle, style, duration_target, hook, hook_style, "
+        "INSERT INTO scripts (topic, angle, style, duration_target, hook, "
         "scenes, full_script, word_count, version, parent_id, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (topic, angle, style, duration_target, hook, hook_style,
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (topic, angle, style, duration_target, hook,
          scenes_json, full_script, word_count, version, parent_id, now),
     )
     script_id = cur.lastrowid
@@ -121,15 +174,16 @@ def add_script(
     for tag in tag_list:
         conn.execute("INSERT INTO script_tags (script_id, tag) VALUES (?, ?)", (script_id, tag))
     # Auto-save the hook
+    hook_beat = scenes[0].beat if scenes else "hook"
     conn.execute(
         "INSERT INTO hooks (text, script_id, style, created_at) VALUES (?, ?, ?, ?)",
-        (hook, script_id, hook_style, now),
+        (hook, script_id, hook_beat, now),
     )
     conn.commit()
     return Script(
         id=script_id, topic=topic, hook=hook, scenes=scenes,
         full_script=full_script, style=style, duration_target=duration_target,
-        hook_style=hook_style, angle=angle, word_count=word_count,
+        angle=angle, word_count=word_count,
         version=version, parent_id=parent_id, created_at=datetime.fromisoformat(now),
         tags=tag_list,
     )
@@ -137,7 +191,7 @@ def add_script(
 
 def get_script(conn: sqlite3.Connection, script_id: int) -> Script | None:
     row = conn.execute(
-        "SELECT id, topic, angle, style, duration_target, hook, hook_style, scenes, "
+        "SELECT id, topic, angle, style, duration_target, hook, scenes, "
         "full_script, word_count, rating, feedback, version, parent_id, created_at "
         "FROM scripts WHERE id = ?",
         (script_id,),
@@ -151,7 +205,7 @@ def get_script(conn: sqlite3.Connection, script_id: int) -> Script | None:
 
 def list_scripts(conn: sqlite3.Connection) -> list[Script]:
     rows = conn.execute(
-        "SELECT id, topic, angle, style, duration_target, hook, hook_style, scenes, "
+        "SELECT id, topic, angle, style, duration_target, hook, scenes, "
         "full_script, word_count, rating, feedback, version, parent_id, created_at "
         "FROM scripts ORDER BY created_at DESC",
     ).fetchall()
@@ -181,7 +235,7 @@ def rate_script(conn: sqlite3.Connection, script_id: int, rating: str, notes: st
 def search_scripts(conn: sqlite3.Connection, query: str) -> list[Script]:
     pattern = f"%{query}%"
     rows = conn.execute(
-        "SELECT id, topic, angle, style, duration_target, hook, hook_style, scenes, "
+        "SELECT id, topic, angle, style, duration_target, hook, scenes, "
         "full_script, word_count, rating, feedback, version, parent_id, created_at "
         "FROM scripts WHERE topic LIKE ? OR full_script LIKE ? OR hook LIKE ? "
         "ORDER BY created_at DESC",
@@ -276,6 +330,31 @@ def deactivate_rule(conn: sqlite3.Connection, rule_id: int) -> bool:
     return cur.rowcount > 0
 
 
+# --- Voice Profile ---
+
+
+def get_voice_profile(conn: sqlite3.Connection) -> list[VoiceProfile]:
+    rows = conn.execute(
+        "SELECT id, attribute, value, active FROM voice_profile WHERE active = 1 ORDER BY attribute",
+    ).fetchall()
+    return [VoiceProfile(id=r[0], attribute=r[1], value=r[2], active=bool(r[3])) for r in rows]
+
+
+def set_voice_profile(conn: sqlite3.Connection, attribute: str, value: str) -> VoiceProfile:
+    now = datetime.now().isoformat()
+    conn.execute(
+        "INSERT INTO voice_profile (attribute, value, created_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(attribute) DO UPDATE SET value = ?, active = 1",
+        (attribute, value, now, value),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT id, attribute, value, active FROM voice_profile WHERE attribute = ?",
+        (attribute,),
+    ).fetchone()
+    return VoiceProfile(id=row[0], attribute=row[1], value=row[2], active=bool(row[3]))
+
+
 # --- Stats ---
 
 
@@ -338,13 +417,12 @@ def _row_to_script(row: tuple) -> Script:
         style=row[3],
         duration_target=row[4],
         hook=row[5],
-        hook_style=row[6],
-        scenes=Script.parse_scenes(row[7]),
-        full_script=row[8],
-        word_count=row[9],
-        rating=row[10],
-        feedback=row[11],
-        version=row[12],
-        parent_id=row[13],
-        created_at=datetime.fromisoformat(row[14]),
+        scenes=Script.parse_scenes(row[6]),
+        full_script=row[7],
+        word_count=row[8],
+        rating=row[9],
+        feedback=row[10],
+        version=row[11],
+        parent_id=row[12],
+        created_at=datetime.fromisoformat(row[13]),
     )

@@ -16,17 +16,25 @@ def _invoke(tmp_path: Path, args: list[str] | None = None) -> object:
 
 
 def _seed_script(tmp_path: Path) -> int:
-    """Add a script via db and return its ID."""
     conn = db.connect(tmp_path / "test.db")
     scenes = [
-        Scene(voiceover="Opening line", visual="Title card with bold text", duration_seconds=5, transition="cut"),
-        Scene(voiceover="Main content here", visual="Brain scan animation", duration_seconds=15, transition="dissolve"),
-        Scene(voiceover="Closing statement", visual="Sunset timelapse", duration_seconds=10, transition="fade"),
+        Scene(beat="hook", voiceover="Opening line", visual="Title card with bold text",
+              camera="dolly-in", motion="text fades in", sound="silence",
+              emotion="curiosity", duration_seconds=3, caption="THE HOOK"),
+        Scene(beat="tension", voiceover="Building tension here", visual="Dark corridor",
+              camera="tracking", motion="shadows creep", sound="low hum",
+              emotion="unease", duration_seconds=10, caption="WHAT IF"),
+        Scene(beat="revelation", voiceover="The twist revealed", visual="Brain scan animation",
+              camera="crane", motion="neurons fire", sound="heartbeat",
+              emotion="recognition", duration_seconds=12, caption="THE TRUTH"),
+        Scene(beat="resolution", voiceover="Closing statement", visual="Sunset timelapse",
+              camera="static", motion="light spreads", sound="birds",
+              emotion="hope", duration_seconds=7, caption="YOU DECIDE"),
     ]
     script = db.add_script(
         conn, topic="Test topic", hook="Did you know?",
-        scenes=scenes, full_script="Opening line. Main content here. Closing statement.",
-        style="educational", duration_target=30, hook_style="question",
+        scenes=scenes, full_script="Opening line. Building tension here. The twist revealed. Closing statement.",
+        style="educational", duration_target=32,
     )
     conn.close()
     return script.id
@@ -41,35 +49,33 @@ def test_render_dry_run(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "DRY RUN" in result.output
     assert "Test topic" in result.output
-    assert "3" in result.output  # 3 scenes
-    assert "scene_01" in result.output
-    assert "scene_02" in result.output
-    assert "scene_03" in result.output
+    assert "4" in result.output  # 4 scenes
 
 
-def test_render_dry_run_shows_durations(tmp_path: Path) -> None:
+def test_render_dry_run_shows_beats(tmp_path: Path) -> None:
     script_id = _seed_script(tmp_path)
     result = _invoke(tmp_path, ["render", str(script_id), "--dry-run"])
-    assert "5s" in result.output
-    assert "15s" in result.output
-    assert "10s" in result.output
+    assert "hook" in result.output
+    assert "tension" in result.output
+    assert "revelation" in result.output
+    assert "resolution" in result.output
 
 
-def test_render_dry_run_shows_kling_durations(tmp_path: Path) -> None:
+def test_render_dry_run_shows_captions(tmp_path: Path) -> None:
     script_id = _seed_script(tmp_path)
     result = _invoke(tmp_path, ["render", str(script_id), "--dry-run"])
-    # 5s scene -> Kling 5s, 15s scene -> Kling 10s, 10s scene -> Kling 10s
-    output = result.output
-    assert "Kling" in output or "Render Plan" in output
+    assert "THE HOOK" in result.output
+    assert "THE TRUTH" in result.output
 
 
 def test_render_dry_run_shows_steps(tmp_path: Path) -> None:
     script_id = _seed_script(tmp_path)
     result = _invoke(tmp_path, ["render", str(script_id), "--dry-run"])
     assert "Flux Pro" in result.output
-    assert "Kling" in result.output
+    assert "Seedance" in result.output
     assert "ElevenLabs" in result.output
     assert "FFmpeg" in result.output
+    assert "caption" in result.output.lower()
 
 
 def test_render_not_found(tmp_path: Path) -> None:
@@ -77,11 +83,11 @@ def test_render_not_found(tmp_path: Path) -> None:
     assert "not found" in result.output.lower()
 
 
-def test_render_dry_run_shows_visual_prompts(tmp_path: Path) -> None:
+def test_render_dry_run_shows_camera(tmp_path: Path) -> None:
     script_id = _seed_script(tmp_path)
     result = _invoke(tmp_path, ["render", str(script_id), "--dry-run"])
-    assert "Title card" in result.output
-    assert "Brain scan" in result.output
+    assert "dolly-in" in result.output
+    assert "tracking" in result.output
 
 
 # --- Config tests ---
@@ -89,6 +95,5 @@ def test_render_dry_run_shows_visual_prompts(tmp_path: Path) -> None:
 
 def test_config_check_keys() -> None:
     from scriptforge.config import check_keys
-    # Keys are set from .env, so this should return empty or the missing ones
     missing = check_keys()
     assert isinstance(missing, list)

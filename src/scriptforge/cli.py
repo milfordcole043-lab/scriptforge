@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from pathlib import Path
 
@@ -19,6 +18,7 @@ console = Console()
 def _get_conn(ctx: click.Context) -> sqlite3.Connection:
     if "conn" not in ctx.obj:
         ctx.obj["conn"] = db.connect(ctx.obj["db_path"])
+        db.seed_defaults(ctx.obj["conn"])
     return ctx.obj["conn"]
 
 
@@ -38,17 +38,25 @@ def cli(ctx: click.Context, db_path: str | None) -> None:
 @click.argument("topic")
 @click.option("--style", "-s", type=click.Choice(["educational", "story", "viral", "cinematic", "explainer"]),
               default="educational", help="Script style.")
-@click.option("--duration", "-d", type=int, default=60, help="Target duration in seconds.")
+@click.option("--duration", "-d", type=int, default=45, help="Target duration in seconds.")
 @click.option("--no-generate", is_flag=True, hidden=True, help="Show context only (for testing).")
 @click.pass_context
 def write(ctx: click.Context, topic: str, style: str, duration: int, no_generate: bool) -> None:
     """Write a new script. Assembles context from rulebook, hooks, and feedback."""
     conn = _get_conn(ctx)
     context = build_write_context(conn, topic=topic, style=style, duration_target=duration)
+    wpm = 130
+    word_target = duration * wpm // 60
 
     console.print(Panel(f"[bold]Topic:[/bold] {topic}\n[bold]Style:[/bold] {style}\n"
-                        f"[bold]Duration:[/bold] {duration}s (~{duration * 150 // 60} words)",
+                        f"[bold]Duration:[/bold] {duration}s (~{word_target} words at {wpm} wpm)\n"
+                        f"[bold]Arc:[/bold] hook -> tension -> revelation -> resolution",
                         title="Script Brief"))
+
+    if context["voice_profile"]:
+        console.print(f"\n[bold cyan]Voice Profile:[/bold cyan]")
+        for vp in context["voice_profile"]:
+            console.print(f"  [dim]{vp.attribute}:[/dim] {vp.value}")
 
     if context["rules"]:
         console.print(f"\n[bold cyan]Rulebook ({len(context['rules'])} rules):[/bold cyan]")
@@ -96,7 +104,7 @@ def view(ctx: click.Context, script_id: int) -> None:
     tags_str = " ".join(f"[magenta]#{t}[/magenta]" for t in script.tags)
     header = (f"[bold]{script.topic}[/bold] ({script.style}, {script.duration_target}s)\n"
               f"Hook: {script.hook}\n"
-              f"Words: {script.word_count} | Version: {script.version}")
+              f"Words: {script.word_count} | Version: {script.version} | Duration: {script.total_duration}s")
     if tags_str:
         header += f" | Tags: {tags_str}"
     if script.rating:
@@ -108,12 +116,14 @@ def view(ctx: click.Context, script_id: int) -> None:
     if script.scenes:
         table = Table(title="Scenes")
         table.add_column("#", style="dim")
+        table.add_column("Beat")
+        table.add_column("Caption")
         table.add_column("Voiceover")
-        table.add_column("Visual")
+        table.add_column("Camera")
+        table.add_column("Emotion")
         table.add_column("Dur", justify="right")
-        table.add_column("Transition")
         for i, s in enumerate(script.scenes, 1):
-            table.add_row(str(i), s.voiceover, s.visual, f"{s.duration_seconds}s", s.transition)
+            table.add_row(str(i), s.beat, s.caption, s.voiceover, s.camera, s.emotion, f"{s.duration_seconds}s")
         console.print(table)
 
     if script.full_script:
@@ -224,7 +234,7 @@ def hooks(ctx: click.Context) -> None:
 
 @cli.command()
 @click.option("--add", "rule_text", default=None, help="Add a new rule.")
-@click.option("--category", "-c", default=None, help="Rule category (hook, pacing, visual, structure, style).")
+@click.option("--category", "-c", default=None, help="Rule category.")
 @click.pass_context
 def rules(ctx: click.Context, rule_text: str | None, category: str | None) -> None:
     """Show active rulebook, or add a new rule with --add."""
@@ -293,9 +303,12 @@ def export(ctx: click.Context, script_id: int, output: str | None) -> None:
     content += f"HOOK: {script.hook}\n\n"
     content += "SCENES:\n"
     for i, s in enumerate(script.scenes, 1):
-        content += f"\n[Scene {i} - {s.duration_seconds}s - {s.transition}]\n"
+        content += f"\n[Scene {i} - {s.beat} - {s.duration_seconds}s]\n"
+        content += f"CAPTION: {s.caption}\n"
         content += f"VO: {s.voiceover}\n"
         content += f"VISUAL: {s.visual}\n"
+        content += f"CAMERA: {s.camera} | MOTION: {s.motion} | SOUND: {s.sound}\n"
+        content += f"EMOTION: {s.emotion}\n"
     content += f"\nFULL SCRIPT:\n{script.full_script}\n"
 
     Path(filename).write_text(content, encoding="utf-8")

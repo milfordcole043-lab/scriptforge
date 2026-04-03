@@ -11,6 +11,7 @@ from rich.table import Table
 
 from scriptforge import db
 from scriptforge.config import ELEVENLABS_API_KEY, FAL_KEY, OUTPUT_DIR
+from scriptforge.engine import build_seedance_prompt
 from scriptforge.models import Script
 
 console = Console()
@@ -29,7 +30,6 @@ def render_script(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = F
         _show_dry_run(script, output_dir)
         return None
 
-    # Check API keys before starting
     from scriptforge.config import check_keys
     missing = check_keys()
     if missing:
@@ -37,25 +37,23 @@ def render_script(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = F
         console.print("[dim]Add them to .env and try again.[/dim]")
         return None
 
-    # Create output directories
     (output_dir / "images").mkdir(parents=True, exist_ok=True)
     (output_dir / "clips").mkdir(parents=True, exist_ok=True)
 
-    # Step 1: Generate images
-    console.print("\n[bold cyan]Step 1/4:[/bold cyan] Generating images...")
+    console.print("\n[bold cyan]Step 1/5:[/bold cyan] Generating images...")
     images = generate_images(script, output_dir)
 
-    # Step 2: Generate video clips
-    console.print("[bold cyan]Step 2/4:[/bold cyan] Generating video clips...")
+    console.print("[bold cyan]Step 2/5:[/bold cyan] Generating video clips...")
     clips = generate_clips(script, images, output_dir)
 
-    # Step 3: Generate voiceover
-    console.print("[bold cyan]Step 3/4:[/bold cyan] Generating voiceover...")
+    console.print("[bold cyan]Step 3/5:[/bold cyan] Burning captions...")
+    captioned = burn_captions(script, clips, output_dir)
+
+    console.print("[bold cyan]Step 4/5:[/bold cyan] Generating voiceover...")
     voiceover = generate_voiceover(script, output_dir)
 
-    # Step 4: Assemble final video
-    console.print("[bold cyan]Step 4/4:[/bold cyan] Assembling final video...")
-    final = assemble_video(clips, voiceover, output_dir)
+    console.print("[bold cyan]Step 5/5:[/bold cyan] Assembling final video...")
+    final = assemble_video(captioned, voiceover, output_dir)
 
     console.print(f"\n[bold green]Done![/bold green] Video saved to: {final}")
     return final
@@ -69,12 +67,12 @@ def generate_images(script: Script, output_dir: Path) -> list[Path]:
     images: list[Path] = []
 
     for i, scene in enumerate(script.scenes):
-        console.print(f"  Scene {i + 1}/{len(script.scenes)}: generating image...")
+        console.print(f"  Scene {i + 1}/{len(script.scenes)} [{scene.beat}]: generating image...")
         result = fal_client.subscribe(
             "fal-ai/flux-pro/v1.1",
             arguments={
                 "prompt": scene.visual,
-                "image_size": "landscape_16_9",
+                "image_size": "portrait_16_9",
                 "num_images": 1,
             },
         )
@@ -88,36 +86,68 @@ def generate_images(script: Script, output_dir: Path) -> list[Path]:
 
 
 def generate_clips(script: Script, images: list[Path], output_dir: Path) -> list[Path]:
-    """Animate each scene image into a video clip using fal.ai Kling."""
+    """Animate each scene image into a video clip using fal.ai Seedance 1.5 Pro."""
     import fal_client
 
     os.environ["FAL_KEY"] = FAL_KEY
     clips: list[Path] = []
 
     for i, (scene, image_path) in enumerate(zip(script.scenes, images)):
-        console.print(f"  Scene {i + 1}/{len(script.scenes)}: generating clip ({scene.duration_seconds}s)...")
+        duration = str(max(4, min(12, scene.duration_seconds)))
+        seedance_prompt = build_seedance_prompt(scene)
+        console.print(f"  Scene {i + 1}/{len(script.scenes)} [{scene.beat}]: generating clip ({duration}s)...")
 
-        # Kling supports 5s or 10s — pick closest
-        kling_duration = "10" if scene.duration_seconds > 7 else "5"
-
-        # Upload image to get a URL for Kling
         image_url = fal_client.upload_file(str(image_path))
 
         result = fal_client.subscribe(
-            "fal-ai/kling-video/v2/master/image-to-video",
+            "fal-ai/bytedance/seedance/v1.5/pro/image-to-video",
             arguments={
                 "image_url": image_url,
-                "prompt": scene.visual,
-                "duration": kling_duration,
+                "prompt": seedance_prompt,
+                "duration": duration,
+                "aspect_ratio": "9:16",
+                "resolution": "1080p",
+                "generate_audio": False,
             },
         )
         video_url = result["video"]["url"]
         clip_path = output_dir / "clips" / f"scene_{i + 1:02d}.mp4"
         urllib.request.urlretrieve(video_url, str(clip_path))
-        console.print(f"    Saved: {clip_path.name} ({kling_duration}s)")
+        console.print(f"    Saved: {clip_path.name} ({duration}s)")
         clips.append(clip_path)
 
     return clips
+
+
+def burn_captions(script: Script, clips: list[Path], output_dir: Path) -> list[Path]:
+    """Burn bold caption text onto each clip using FFmpeg drawtext."""
+    captioned: list[Path] = []
+
+    for i, (scene, clip) in enumerate(zip(script.scenes, clips)):
+        caption_path = output_dir / "clips" / f"scene_{i + 1:02d}_captioned.mp4"
+        caption_text = scene.caption.replace("'", "\\'").replace(":", "\\:")
+
+        cmd = [
+            "ffmpeg", "-y", "-i", str(clip),
+            "-vf", (
+                f"drawtext=text='{caption_text}'"
+                f":fontsize=48:fontcolor=white:borderw=3:bordercolor=black"
+                f":x=(w-text_w)/2:y=h-h/5"
+                f":fontfile=C\\\\:/Windows/Fonts/arialbd.ttf"
+            ),
+            "-c:a", "copy",
+            str(caption_path),
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            console.print(f"  [yellow]Caption burn failed for scene {i + 1}, using original clip[/yellow]")
+            captioned.append(clip)
+        else:
+            console.print(f"    Captioned: {caption_path.name}")
+            captioned.append(caption_path)
+
+    return captioned
 
 
 def generate_voiceover(script: Script, output_dir: Path) -> Path:
@@ -128,7 +158,7 @@ def generate_voiceover(script: Script, output_dir: Path) -> Path:
 
     audio_generator = client.text_to_speech.convert(
         text=script.full_script,
-        voice_id="JBFqnCBsd6RMkjVDRZzb",  # George — deep, calm narrator
+        voice_id="nPczCjzI2devNBz1zQrb",  # Brian -- warm, natural narrator
         model_id="eleven_v3",
         output_format="mp3_44100_128",
     )
@@ -144,7 +174,6 @@ def generate_voiceover(script: Script, output_dir: Path) -> Path:
 
 def assemble_video(clips: list[Path], voiceover: Path, output_dir: Path) -> Path:
     """Concatenate video clips and overlay voiceover using FFmpeg."""
-    # Write concat list
     concat_path = output_dir / "concat.txt"
     with open(concat_path, "w") as f:
         for clip in clips:
@@ -165,7 +194,6 @@ def assemble_video(clips: list[Path], voiceover: Path, output_dir: Path) -> Path
         console.print(f"[red]FFmpeg error:[/red]\n{result.stderr}")
         raise RuntimeError("FFmpeg assembly failed")
 
-    # Clean up concat file
     concat_path.unlink()
     console.print(f"    Saved: {final_path.name}")
     return final_path
@@ -173,7 +201,7 @@ def assemble_video(clips: list[Path], voiceover: Path, output_dir: Path) -> Path
 
 def _show_dry_run(script: Script, output_dir: Path) -> None:
     """Show what the pipeline would do without calling any APIs."""
-    console.print(f"\n[bold yellow]DRY RUN[/bold yellow] — Script #{script.id}: {script.topic}\n")
+    console.print(f"\n[bold yellow]DRY RUN[/bold yellow] -- Script #{script.id}: {script.topic}\n")
 
     console.print(f"  Output directory: {output_dir}")
     console.print(f"  Total scenes: {len(script.scenes)}")
@@ -184,27 +212,30 @@ def _show_dry_run(script: Script, output_dir: Path) -> None:
 
     table = Table(title="Render Plan")
     table.add_column("#", style="dim")
+    table.add_column("Beat")
+    table.add_column("Caption")
     table.add_column("Visual Prompt")
+    table.add_column("Camera")
     table.add_column("Duration")
-    table.add_column("Kling Duration")
-    table.add_column("Image Output")
-    table.add_column("Clip Output")
+    table.add_column("Clip Dur")
 
     for i, scene in enumerate(script.scenes):
-        kling_dur = "10s" if scene.duration_seconds > 7 else "5s"
+        clip_dur = f"{max(4, min(12, scene.duration_seconds))}s"
         table.add_row(
             str(i + 1),
-            scene.visual[:60] + ("..." if len(scene.visual) > 60 else ""),
+            scene.beat,
+            scene.caption,
+            scene.visual[:40] + ("..." if len(scene.visual) > 40 else ""),
+            scene.camera,
             f"{scene.duration_seconds}s",
-            kling_dur,
-            f"scene_{i + 1:02d}.png",
-            f"scene_{i + 1:02d}.mp4",
+            clip_dur,
         )
 
     console.print(table)
 
-    console.print(f"\n  [bold]Step 1:[/bold] Generate {len(script.scenes)} images via fal.ai Flux Pro")
-    console.print(f"  [bold]Step 2:[/bold] Animate {len(script.scenes)} clips via fal.ai Kling")
-    console.print(f"  [bold]Step 3:[/bold] Generate voiceover via ElevenLabs (eleven_v3)")
-    console.print(f"  [bold]Step 4:[/bold] Assemble with FFmpeg -> final.mp4")
+    console.print(f"\n  [bold]Step 1:[/bold] Generate {len(script.scenes)} images via fal.ai Flux Pro (9:16)")
+    console.print(f"  [bold]Step 2:[/bold] Animate {len(script.scenes)} clips via Seedance 1.5 Pro (1080p)")
+    console.print(f"  [bold]Step 3:[/bold] Burn captions onto clips (FFmpeg drawtext)")
+    console.print(f"  [bold]Step 4:[/bold] Generate voiceover via ElevenLabs (Brian, eleven_v3)")
+    console.print(f"  [bold]Step 5:[/bold] Assemble with FFmpeg -> final.mp4")
     console.print(f"\n  [dim]Run without --dry-run to execute.[/dim]\n")
