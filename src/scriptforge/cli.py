@@ -665,6 +665,69 @@ def list_characters_cmd(ctx: click.Context) -> None:
     console.print(table)
 
 
+# --- migrations ---
+
+
+@cli.command("migrate-maya")
+@click.pass_context
+def migrate_maya(ctx: click.Context) -> None:
+    """Update Maya's appearance, wardrobe, and reset her reference portrait."""
+    conn = _get_conn(ctx)
+    char = db.get_character(conn, 1)
+    if not char or char.name.lower() != "maya":
+        console.print("[red]Maya not found at character ID 1.[/red]")
+        return
+
+    # Update appearance
+    new_appearance = (
+        "dark wavy hair styled and clean, warm brown skin with healthy glow, "
+        "high cheekbones, full lips, expressive dark eyes with long lashes, "
+        "slim athletic build, bright alert eyes, confident natural expression, "
+        "clear skin, small beauty mark below left eye, two thin gold rings on right hand, "
+        "slightly asymmetric smile wider on the left"
+    )
+    db.update_character_appearance(conn, char.id, appearance=new_appearance)
+    console.print("[green]Updated appearance.[/green]")
+
+    # Replace wardrobe
+    new_wardrobe = [
+        {"outfit": "fitted black leather jacket over white silk camisole, gold layered necklaces", "tones": ["empowering", "intense"]},
+        {"outfit": "rust colored satin slip dress with thin straps, delicate chain bracelet", "tones": ["empowering", "curious"]},
+        {"outfit": "emerald green crop top, high-waisted black tailored pants, statement earrings", "tones": ["empowering", "intense"]},
+        {"outfit": "cream oversized cashmere sweater falling off one shoulder, minimal gold jewelry", "tones": ["curious", "vulnerable"]},
+        {"outfit": "burgundy velvet blazer, black lace top underneath, rings on every finger", "tones": ["empowering", "intense"]},
+        {"outfit": "white bodysuit tucked into light wash vintage jeans, chunky gold hoops", "tones": ["empowering", "curious"]},
+    ]
+    db.update_character_wardrobe(conn, char.id, new_wardrobe)
+    console.print(f"[green]Replaced wardrobe with {len(new_wardrobe)} outfits.[/green]")
+
+    # Clear reference portrait
+    if char.reference_image_path:
+        ref_path = Path(char.reference_image_path)
+        if ref_path.exists():
+            ref_path.unlink()
+            console.print(f"[yellow]Deleted old portrait: {ref_path.name}[/yellow]")
+    db.update_character_image(conn, char.id, "")
+    console.print("[green]Cleared reference image path — fresh portrait will generate on next render.[/green]")
+
+    # Seed new body language and quality rules into existing DB
+    existing_rules = {r.rule for r in db.get_active_rules(conn)}
+    new_rules = [
+        ("Slow subtle character movements create life: gentle weight shift, slight lean forward, fingers touching jewelry, small hand gestures while talking. Background elements should move MORE than the character.", "visual", "body language system"),
+        ("What fails in lip-sync video: fast camera pans, camera rotation, character walking while talking, complex simultaneous body movements. What works: gentle sway, hair touch, head tilt, necklace touch.", "visual", "body language system"),
+        ("Never describe a character with perfect symmetry or flawless skin. Include natural imperfections: beauty marks, asymmetric smile, visible pores. AI artifacts come from over-idealized descriptions.", "visual", "quality system"),
+    ]
+    added = 0
+    for rule_text, category, source in new_rules:
+        if rule_text not in existing_rules:
+            db.add_rule(conn, rule=rule_text, category=category, source=source)
+            added += 1
+    if added:
+        console.print(f"[green]Added {added} new rules (body language + quality).[/green]")
+
+    console.print("\n[bold green]Maya migration complete.[/bold green]\n")
+
+
 # --- research ---
 
 

@@ -5,7 +5,8 @@ import sqlite3
 from scriptforge import db
 from scriptforge.engine import (
     auto_optimize, build_write_context, build_rewrite_context,
-    analyze_feedback_patterns, build_video_prompt, _build_temporal_motion,
+    analyze_feedback_patterns, build_video_prompt, build_pov_video_prompt,
+    _build_temporal_motion, _build_body_language,
     _interpolate_lighting, _filter_voice_profile, _select_rules_for_beat,
 )
 from scriptforge.models import Character, Scene, VoiceProfile
@@ -54,6 +55,7 @@ def test_build_video_prompt_has_labels() -> None:
     prompt = build_video_prompt(scene, _CHAR)
     assert "[SCENE]" in prompt
     assert "[SUBJECT]" in prompt
+    assert "[BODY LANGUAGE]" in prompt
     assert "[CAMERA]" in prompt
     assert "[LIGHTING]" in prompt
     assert "[MOTION]" in prompt
@@ -83,18 +85,18 @@ def test_temporal_motion_long_scene() -> None:
     scene = _scene(dur=12)
     scene.motion = "thumb trembles, shoulders shake, everything goes still"
     result = _build_temporal_motion(scene)
-    assert "Initially" in result
-    assert "Then" in result
-    assert "Finally" in result
+    assert "thumb trembles" in result
+    assert "shoulders shake" in result
+    assert "mid-moment" in result
+    assert "as the beat ends" in result
 
 
 def test_temporal_motion_short_scene() -> None:
     scene = _scene(dur=3)
     scene.motion = "thumb trembles"
     result = _build_temporal_motion(scene)
-    assert "Initially" in result
-    assert "Then" in result
-    assert "Finally" not in result
+    assert "thumb trembles" in result
+    assert "stillness" in result
 
 
 # --- Scene connectivity ---
@@ -343,3 +345,69 @@ def test_auto_optimize_no_crash_insufficient_data(conn: sqlite3.Connection) -> N
     # No feedback at all — should return empty or just template updates
     messages = auto_optimize(conn)
     assert isinstance(messages, list)
+
+
+# --- Body language ---
+
+
+def test_build_body_language_known_emotion() -> None:
+    scene = _scene()
+    scene.character_emotion = "fascination"
+    result = _build_body_language(scene)
+    assert "leans forward" in result
+
+
+def test_build_body_language_partial_match() -> None:
+    scene = _scene()
+    scene.character_emotion = "quiet curiosity mixed with awe"
+    result = _build_body_language(scene)
+    assert "eyebrow" in result or "lean" in result  # matches "curiosity"
+
+
+def test_build_body_language_fallback() -> None:
+    scene = _scene()
+    scene.character_emotion = "some unknown emotion xyz"
+    result = _build_body_language(scene)
+    assert len(result) > 0  # Always returns something
+
+
+def test_pov_video_prompt_has_body_language() -> None:
+    scene = _scene()
+    prompt = build_pov_video_prompt(scene, _CHAR)
+    assert "[BODY LANGUAGE]" in prompt
+    assert "frozen talking head" in prompt
+
+
+def test_body_language_before_camera() -> None:
+    scene = _scene()
+    prompt = build_video_prompt(scene, _CHAR)
+    bl_pos = prompt.find("[BODY LANGUAGE]")
+    cam_pos = prompt.find("[CAMERA]")
+    assert bl_pos < cam_pos
+
+
+def test_auto_optimize_no_camera_rule(conn: sqlite3.Connection) -> None:
+    """auto_optimize should NOT create a 'prefer static selfie' rule."""
+    import json
+    db.seed_defaults(conn)
+    # Seed enough camera feedback to trigger the old rule
+    scenes_json = json.dumps([
+        {"beat": "hook", "voiceover": "V", "character_action": "stares", "location": "bedroom",
+         "character_emotion": "curious", "camera": "static selfie", "lighting": "phone screen",
+         "motion": "m", "sound": "s", "caption": "C", "duration_seconds": 5, "dialogue": ""},
+    ])
+    for i in range(4):
+        conn.execute(
+            "INSERT INTO scripts (topic, hook, scenes, full_script, word_count, "
+            "version, mode, tone, created_at) VALUES (?,?,?,?,?,?,?,?,datetime('now'))",
+            (f"t{i}", "h", scenes_json, "text", 10, 1, "pov", "empowering"),
+        )
+        conn.execute(
+            "INSERT INTO scene_feedback (script_id, scene_index, visual_quality, "
+            "emotional_impact, pacing, created_at) VALUES (?,?,?,?,?,datetime('now'))",
+            (i + 1, 0, 5, 5, 5),
+        )
+    conn.commit()
+    auto_optimize(conn)
+    rules = db.get_active_rules(conn)
+    assert not any("Prefer static selfie" in r.rule for r in rules)

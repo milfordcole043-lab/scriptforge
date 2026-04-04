@@ -172,3 +172,37 @@ def test_characters_list_cli(tmp_path: Path) -> None:
     result = _invoke(tmp_path, ["characters"])
     assert result.exit_code == 0
     assert "Maya" in result.output
+
+
+# --- Appearance update ---
+
+
+def test_update_character_appearance(conn: sqlite3.Connection) -> None:
+    char = db.add_character(conn, name="Maya", age="late 20s", gender="female",
+                            appearance="dark hair", clothing="hoodie")
+    db.update_character_appearance(conn, char.id, appearance="dark wavy hair, high cheekbones")
+    updated = db.get_character(conn, char.id)
+    assert "high cheekbones" in updated.appearance
+    assert updated.clothing == "hoodie"  # unchanged
+
+
+def test_update_character_appearance_clothing_only(conn: sqlite3.Connection) -> None:
+    char = db.add_character(conn, name="Maya", age="late 20s", gender="female",
+                            appearance="dark hair", clothing="hoodie")
+    db.update_character_appearance(conn, char.id, clothing="leather jacket")
+    updated = db.get_character(conn, char.id)
+    assert updated.appearance == "dark hair"  # unchanged
+    assert updated.clothing == "leather jacket"
+
+
+def test_update_character_wardrobe_dicts(conn: sqlite3.Connection) -> None:
+    char = db.add_character(conn, name="Maya", age="late 20s", gender="female",
+                            appearance="dark hair", clothing="hoodie")
+    wardrobe = [
+        {"outfit": "leather jacket over silk camisole", "tones": ["empowering", "intense"]},
+        {"outfit": "satin slip dress", "tones": ["empowering", "curious"]},
+    ]
+    db.update_character_wardrobe(conn, char.id, wardrobe)
+    updated = db.get_character(conn, char.id)
+    assert len(updated.wardrobe) == 2
+    assert updated.wardrobe[0]["tones"] == ["empowering", "intense"]

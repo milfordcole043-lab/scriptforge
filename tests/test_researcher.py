@@ -159,7 +159,7 @@ def test_unapplied_findings(conn: sqlite3.Connection) -> None:
 def test_seed_prompt_rules(conn: sqlite3.Connection) -> None:
     db.seed_defaults(conn)
     rules = db.get_prompt_rules(conn)
-    assert len(rules) == 19
+    assert len(rules) == 20
 
 
 def test_add_prompt_rule(conn: sqlite3.Connection) -> None:

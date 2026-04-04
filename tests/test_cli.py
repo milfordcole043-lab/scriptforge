@@ -39,7 +39,7 @@ def test_write_shows_seeded_rules(tmp_path: Path) -> None:
     result = _invoke(tmp_path, ["write", "Test topic", "--no-generate"])
     assert result.exit_code == 0
     assert "Rulebook" in result.output
-    assert "37 rules" in result.output
+    assert "40 rules" in result.output
 
 
 # --- view ---

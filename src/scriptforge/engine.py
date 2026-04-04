@@ -79,7 +79,7 @@ def match_template(
 
 
 def _build_temporal_motion(scene: Scene) -> str:
-    """Build motion description with temporal phases based on duration."""
+    """Build motion description with natural, organic temporal flow."""
     motion = scene.motion or ""
     action = scene.character_action or ""
     if not motion and not action:
@@ -91,15 +91,17 @@ def _build_temporal_motion(scene: Scene) -> str:
     if not parts:
         return motion
 
-    start = parts[0]
-    middle = parts[1] if len(parts) > 1 else f"{start} intensifies"
-    end = parts[-1] if len(parts) > 2 else "settling into stillness"
+    if len(parts) == 1:
+        return f"{parts[0]}, settling into stillness"
 
-    if scene.duration_seconds >= 10 and len(parts) >= 2:
-        return f"Initially {start}. Then {middle}. Finally {end}"
+    if len(parts) == 2:
+        return f"{parts[0]}, then {parts[1]}"
+
+    # 3+ parts: weave them naturally
+    if scene.duration_seconds >= 10:
+        return f"{parts[0]}, {parts[1]} mid-moment, {parts[2]} as the beat ends"
     else:
-        rest = f"{parts[-1]} comes to rest" if len(parts) > 1 else f"{start}, then stillness"
-        return f"Initially {start}. Then {rest}"
+        return f"{parts[0]}, then {parts[1]}"
 
 
 # --- Video prompt builders ---
@@ -206,6 +208,11 @@ def build_video_prompt(scene: Scene, character: Character | None = None,
     elif scene.character_action:
         sections.append(f"[ACTION] {scene.character_action}")
 
+    # [BODY LANGUAGE] — emotion-driven physical cues
+    body_language = _build_body_language(scene)
+    if body_language:
+        sections.append(f"[BODY LANGUAGE] {body_language}")
+
     # [CAMERA]
     if scene.camera:
         sections.append(f"[CAMERA] {scene.camera}")
@@ -228,7 +235,7 @@ def build_video_prompt(scene: Scene, character: Character | None = None,
         sections.append(f"[MOTION] {temporal_motion}")
 
     # [STYLE]
-    sections.append(f"[STYLE] Cinematic, intimate. {bg['ambient_depth']}")
+    sections.append(f"[STYLE] Cinematic, intimate, shallow depth of field, 35mm film grain, natural skin texture. {bg['ambient_depth']}")
 
     return ". ".join(sections) + "."
 
@@ -260,6 +267,14 @@ def build_pov_video_prompt(scene: Scene, character: Character,
     elif scene.character_action:
         sections.append(f"[ACTION] {scene.character_action}")
 
+    # [BODY LANGUAGE] — never a frozen talking head
+    body_language = _build_body_language(scene)
+    if body_language:
+        sections.append(
+            f"[BODY LANGUAGE] {body_language}. "
+            "Character should never be a frozen talking head -- subtle continuous movement"
+        )
+
     sections.append("[SPEECH] Talking directly to camera, eyes locked on camera lens, clear mouth articulation, natural lip movement")
 
     # Light progression with micro-lighting shift
@@ -275,7 +290,7 @@ def build_pov_video_prompt(scene: Scene, character: Character,
     sections.append(f"[BACKGROUND] {bg_moves}. All background elements in soft bokeh blur")
 
     sections.append("[CAMERA] Phone camera perspective, slightly below eye level, subtle handheld wobble")
-    sections.append(f"[STYLE] Raw, intimate, cinematic. {bg['ambient_depth']}")
+    sections.append(f"[STYLE] Raw, intimate, cinematic, shallow depth of field, natural skin texture, no airbrushing. {bg['ambient_depth']}")
 
     return ". ".join(sections) + "."
 
@@ -286,6 +301,45 @@ _TONE_PRESENTATION = {
     "curious": "slightly raised eyebrows, alert interested eyes, natural half-smile, engaged expression",
     "intense": "sharp focused gaze, direct eye contact, still and composed, dramatic presence",
 }
+
+# --- Body language mapping ---
+
+_EMOTION_BODY_LANGUAGE: dict[str, str] = {
+    "fascination": "leans forward slightly, eyes widen, lips part in quiet amazement",
+    "confidence": "shoulders back, chin slightly raised, relaxed open posture",
+    "wonder": "slight head tilt, lips part, eyes search upward briefly",
+    "curiosity": "eyebrow raise, slight squint, subtle lean forward",
+    "vulnerability": "arms close to body, shoulders soften, looks down then back up",
+    "vulnerable": "arms close to body, shoulders soften, looks down then back up",
+    "loneliness": "fingers trace collarbone absently, gaze drifts to middle distance",
+    "realization": "slight freeze, eyes widen briefly, slow nod begins",
+    "amusement": "corner of mouth lifts, eyes crinkle slightly, subtle exhale",
+    "anxiety": "fingers fidget with jewelry or hem, weight shifts side to side",
+    "acceptance": "shoulders drop with a slow exhale, chin dips gently, hands open",
+    "determination": "jaw sets subtly, posture straightens, steady forward gaze",
+    "sadness": "chin drops slightly, hand moves to chest, breathing slows visibly",
+}
+
+_FALLBACK_BODY_LANGUAGE = [
+    "gentle weight shift while speaking",
+    "subtle hand gesture mid-sentence",
+    "slight head tilt at the key moment",
+    "fingers absently touch necklace or collar",
+]
+
+
+def _build_body_language(scene: Scene) -> str:
+    """Map scene emotion to subtle body language cues. Never returns empty."""
+    import random
+    emotion = (scene.character_emotion or "").lower()
+
+    # Direct keyword match
+    for key, language in _EMOTION_BODY_LANGUAGE.items():
+        if key in emotion:
+            return language
+
+    # Fallback: pick 2 subtle movements
+    return ", ".join(random.sample(_FALLBACK_BODY_LANGUAGE, 2))
 
 
 def build_pov_reference_prompt(character: Character, lighting: str = "",
@@ -312,6 +366,8 @@ def build_pov_reference_prompt(character: Character, lighting: str = "",
     parts.append("Eyes looking directly into camera lens, maintaining eye contact. "
                  "Selfie camera angle, slightly below eye level. Unposed, raw, candid. "
                  "Shot on phone camera. Consistent lighting throughout")
+    parts.append("Natural skin texture, visible pores, no airbrushing. "
+                 "Shallow depth of field, 35mm film quality")
     return ". ".join(parts) + "."
 
 
@@ -640,7 +696,7 @@ def _build_write_prompt(
     sections.append("character_emotion: (internal state -- desperate longing, quiet recognition)")
     sections.append("camera: (dolly-in, tracking, crane, handheld, whip pan, static, orbital)")
     sections.append("lighting: (real light sources -- cold blue phone screen, warm amber dawn through window)")
-    sections.append("motion: (describe with temporal flow: 'Initially X, then Y, finally Z')")
+    sections.append("motion: (natural body language: 'gently shifts weight while speaking, fingers absently touch necklace mid-sentence, slight head tilt at the key word')")
     sections.append("sound: (ambient -- silence, heartbeat, rain, distant birdsong)")
     sections.append("caption: (3-5 word bold overlay -- must work without sound)")
     sections.append("duration: (seconds)")
@@ -810,17 +866,15 @@ def auto_optimize(conn: sqlite3.Connection) -> list[str]:
                 db.add_rule(conn, rule=rule_text, category="pacing", source="auto-optimization")
                 messages.append(f"  New rule: short scenes outperform long by {short_avg - long_avg:.1f}")
 
-    # Camera patterns
+    # Camera patterns — informational only, no auto-rules (static bias was misleading)
     selfie_scores = camera_scores.get("static selfie", [])
     other_scores = camera_scores.get("other camera", [])
     if len(selfie_scores) >= 3 and len(other_scores) >= 3:
         selfie_avg = sum(selfie_scores) / len(selfie_scores)
         other_avg = sum(other_scores) / len(other_scores)
-        if selfie_avg - other_avg >= 0.5:
-            rule_text = f"Auto-detected: static selfie camera scores {selfie_avg:.1f}/5 vs other cameras at {other_avg:.1f}/5. Prefer static selfie for POV."
-            if rule_text not in existing_auto:
-                db.add_rule(conn, rule=rule_text, category="camera", source="auto-optimization")
-                messages.append(f"  New rule: static selfie outperforms other cameras by {selfie_avg - other_avg:.1f}")
+        if abs(selfie_avg - other_avg) >= 0.5:
+            better = "static selfie" if selfie_avg > other_avg else "varied camera"
+            messages.append(f"  Camera note: {better} trending higher ({selfie_avg:.1f} vs {other_avg:.1f})")
 
     return messages
 

@@ -206,14 +206,15 @@ _DEFAULT_PROMPT_RULES = [
     # Lip sync prompt rules
     ("lipsync", "always include 'talking directly to camera' in POV video prompts", 8),
     ("lipsync_mouth", "always include 'clear mouth articulation' and 'natural lip movement'", 8),
-    ("lipsync_body", "keep body action simple during speech -- no complex movements while talking", 7),
+    ("lipsync_body", "subtle continuous movement during speech works well: gentle sway, slight lean forward, hair touch, hand gestures. Avoid fast pans, walking, or complex body movement", 7),
     ("lipsync_ref", "character reference must show teeth visible and slight smile", 7),
-    ("lipsync_motion", "motion intensity low to prevent face morphing during speech", 6),
+    ("lipsync_motion", "background should have MORE movement than character for depth contrast. Character movement slow and subtle to prevent face morphing", 6),
     ("lipsync_duration", "shorter clips 3-7s maintain better lip sync than longer ones", 6),
     ("lipsync_chain", "extract last frame of each clip and use as reference for next clip", 5),
     ("lipsync_angle", "front-facing or 3/4 angle only for lip sync accuracy", 7),
     ("lipsync_camera", "phone camera perspective: slightly below eye level, subtle handheld wobble", 6),
     ("lipsync_gaze", "POV character must maintain direct eye contact with camera lens throughout every scene", 8),
+    ("anti_artifact", "specify natural skin texture, visible pores, asymmetric features in character prompts to reduce AI look", 7),
 ]
 
 _DEFAULT_RULES = [
@@ -259,6 +260,11 @@ _DEFAULT_RULES = [
     ("Every scene must have at least 2 background motion elements that match the location -- leaves, pedestrians, steam, reflections. Never a static dead background.", "visual", "background system"),
     ("Every scene must have a micro-lighting shift -- a subtle change within the scene that prevents static feeling. Cloud shadows, flickering lights, passing headlights.", "lighting", "background system"),
     ("Background figures should always be in soft bokeh blur to keep focus on the character. Never sharp background detail competing with the subject.", "visual", "background system"),
+    # Body language rules
+    ("Slow subtle character movements create life: gentle weight shift, slight lean forward, fingers touching jewelry, small hand gestures while talking. Background elements should move MORE than the character.", "visual", "body language system"),
+    ("What fails in lip-sync video: fast camera pans, camera rotation, character walking while talking, complex simultaneous body movements. What works: gentle sway, hair touch, head tilt, necklace touch.", "visual", "body language system"),
+    # Anti-AI quality rules
+    ("Never describe a character with perfect symmetry or flawless skin. Include natural imperfections: beauty marks, asymmetric smile, visible pores. AI artifacts come from over-idealized descriptions.", "visual", "quality system"),
 ]
 
 _DEFAULT_VOICE_PROFILE = [
@@ -696,8 +702,8 @@ def list_characters(conn: sqlite3.Connection) -> list[Character]:
 
 
 def update_character_wardrobe(conn: sqlite3.Connection, character_id: int,
-                               wardrobe: list[str]) -> bool:
-    """Update a character's wardrobe (list of outfit descriptions)."""
+                               wardrobe: list) -> bool:
+    """Update a character's wardrobe (list of outfit dicts or strings)."""
     import json as _json
     cur = conn.execute(
         "UPDATE character_profiles SET wardrobe = ? WHERE id = ?",
@@ -711,6 +717,29 @@ def update_character_image(conn: sqlite3.Connection, character_id: int, path: st
     cur = conn.execute(
         "UPDATE character_profiles SET reference_image_path = ? WHERE id = ?",
         (path, character_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def update_character_appearance(conn: sqlite3.Connection, character_id: int,
+                                appearance: str | None = None,
+                                clothing: str | None = None) -> bool:
+    """Update a character's appearance and/or clothing text."""
+    updates: list[str] = []
+    params: list[str | int] = []
+    if appearance is not None:
+        updates.append("appearance = ?")
+        params.append(appearance)
+    if clothing is not None:
+        updates.append("clothing = ?")
+        params.append(clothing)
+    if not updates:
+        return False
+    params.append(character_id)
+    cur = conn.execute(
+        f"UPDATE character_profiles SET {', '.join(updates)} WHERE id = ?",
+        params,
     )
     conn.commit()
     return cur.rowcount > 0
