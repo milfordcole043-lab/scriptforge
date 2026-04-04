@@ -5,6 +5,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 VALID_BEATS = {"hook", "tension", "revelation", "resolution"}
+
+
+def get_valid_beats(template: StoryTemplate | None = None) -> set[str]:
+    """Return valid beat names — from template if provided, else default 4-beat arc."""
+    if template is None:
+        return VALID_BEATS
+    return {b["beat"] for b in template.beat_structure}
 VALID_CAMERAS = {"dolly-in", "tracking", "crane", "handheld", "whip pan", "static", "orbital"}
 REAL_LIGHT_SOURCES = {
     "phone", "screen", "neon", "candle", "candlelight", "lamp", "dawn", "sunset",
@@ -58,6 +65,7 @@ class Script:
     version: int = 1
     parent_id: int | None = None
     character_id: int | None = None
+    template_id: int | None = None
     mode: str = "narrator"
     tags: list[str] = field(default_factory=list)
 
@@ -75,8 +83,18 @@ class Script:
 
     @staticmethod
     def parse_scenes(raw: str) -> list[Scene]:
+        import dataclasses
+        fields = {f.name: f for f in dataclasses.fields(Scene)}
         data = json.loads(raw)
-        return [Scene(**s) for s in data]
+        scenes = []
+        for s in data:
+            filtered = {k: v for k, v in s.items() if k in fields}
+            # Fill missing required fields with safe defaults
+            for name, f in fields.items():
+                if name not in filtered and f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING:
+                    filtered[name] = 0 if f.type == "int" else ""
+            scenes.append(Scene(**filtered))
+        return scenes
 
     @property
     def total_duration(self) -> int:
@@ -175,13 +193,28 @@ class SceneFeedback:
     created_at: datetime | None = None
 
 
-def validate_script(scenes: list[Scene], full_script: str) -> list[str]:
+@dataclass
+class StoryTemplate:
+    id: int
+    name: str
+    description: str
+    beat_structure: list[dict]
+    matching_keywords: list[str]
+    visual_style: str
+    success_rate: float = 0.0
+    times_used: int = 0
+    created_at: datetime | None = None
+
+
+def validate_script(scenes: list[Scene], full_script: str,
+                    template: StoryTemplate | None = None) -> list[str]:
     """Validate a script against narrative arc rules. Returns list of errors."""
     errors: list[str] = []
 
-    # Check all 4 beats present
+    # Check all beats present (template-specific or default 4-beat)
+    expected_beats = get_valid_beats(template)
     beats = {s.beat for s in scenes}
-    missing = VALID_BEATS - beats
+    missing = expected_beats - beats
     if missing:
         errors.append(f"Missing beats: {', '.join(sorted(missing))}")
 

@@ -111,6 +111,7 @@ def test_pov_video_prompt() -> None:
     scene = _pov_scene()
     prompt = build_pov_video_prompt(scene, char)
     assert "Talking directly to camera" in prompt
+    assert "eyes locked on camera lens" in prompt
     assert "lip movement" in prompt
     assert "phone camera" in prompt.lower()
     assert "dark wavy hair" in prompt
@@ -127,6 +128,7 @@ def test_pov_reference_prompt_with_emotion() -> None:
     assert "selfie" in prompt.lower()
     assert "exhausted" in prompt.lower()
     assert "dark wavy hair" in prompt
+    assert "eye contact" in prompt.lower() or "looking directly into camera" in prompt.lower()
 
 
 def test_pov_reference_prompt_default_emotion() -> None:
@@ -231,3 +233,61 @@ def test_pov_voice_profile_seeded(conn: sqlite3.Connection) -> None:
     assert "pov_person" in attrs
     assert "pov_style" in attrs
     assert "pov_pacing" in attrs
+
+
+# --- Gaze direction in continuity ---
+
+
+def test_pov_video_prompt_continuity_has_gaze() -> None:
+    char = Character(id=1, name="Maya", age="late 20s", gender="female",
+                     appearance="dark wavy hair", clothing="hoodie", created_at=None)
+    prev = _pov_scene(beat="hook", dur=3)
+    scene = _pov_scene(beat="tension", dur=8)
+    prompt = build_pov_video_prompt(scene, char, prev_scene=prev, scene_index=1)
+    assert "Eyes remain focused on camera" in prompt
+
+
+# --- Sub-chunk splitting ---
+
+
+def test_split_long_chunk(tmp_path: Path) -> None:
+    from pydub import AudioSegment
+    from pydub.generators import Sine
+    from scriptforge.pov_pipeline import _split_long_chunk
+
+    # Create a 10-second sine wave audio
+    audio = Sine(440).to_audio_segment(duration=10000)
+    chunk_dir = tmp_path / "chunks"
+    chunk_dir.mkdir()
+    chunk_path = chunk_dir / "chunk_01.mp3"
+    audio.export(str(chunk_path), format="mp3")
+
+    # Should split into 2 sub-chunks (10s / 7s max = 2 parts)
+    result = _split_long_chunk(chunk_path, 7.0, tmp_path, 1)
+    assert len(result) == 2
+    assert all(p.exists() for p in result)
+
+
+def test_split_short_chunk_not_split(tmp_path: Path) -> None:
+    from pydub import AudioSegment
+    from pydub.generators import Sine
+    from scriptforge.pov_pipeline import _split_long_chunk
+
+    # Create a 5-second audio — under threshold
+    audio = Sine(440).to_audio_segment(duration=5000)
+    chunk_dir = tmp_path / "chunks"
+    chunk_dir.mkdir()
+    chunk_path = chunk_dir / "chunk_01.mp3"
+    audio.export(str(chunk_path), format="mp3")
+
+    result = _split_long_chunk(chunk_path, 7.0, tmp_path, 1)
+    assert len(result) == 1
+    assert result[0] == chunk_path
+
+
+def test_gaze_prompt_rule_seeded(conn: sqlite3.Connection) -> None:
+    db.seed_defaults(conn)
+    rules = db.get_prompt_rules(conn)
+    gaze_rules = [r for r in rules if r.element == "lipsync_gaze"]
+    assert len(gaze_rules) == 1
+    assert "eye contact" in gaze_rules[0].rule.lower()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import sqlite3
 import subprocess
@@ -225,6 +226,35 @@ def generate_pov_reference(character: Character, lighting: str, hook_emotion: st
     return ref_path
 
 
+MAX_LIPSYNC_CHUNK_SECONDS = 7.0
+
+
+def _split_long_chunk(chunk_path: Path, max_seconds: float,
+                      output_dir: Path, scene_num: int) -> list[Path]:
+    """Split an audio chunk into sub-chunks if it exceeds max_seconds."""
+    from pydub import AudioSegment
+
+    audio = AudioSegment.from_file(str(chunk_path))
+    duration_s = len(audio) / 1000.0
+
+    if duration_s <= max_seconds:
+        return [chunk_path]
+
+    n_parts = math.ceil(duration_s / max_seconds)
+    part_ms = len(audio) // n_parts
+    sub_chunks: list[Path] = []
+
+    for j in range(n_parts):
+        sub_path = output_dir / "chunks" / f"chunk_{scene_num:02d}_{j + 1:02d}.mp3"
+        start = j * part_ms
+        end = len(audio) if j == n_parts - 1 else start + part_ms
+        sub = audio[start:end]
+        sub.export(str(sub_path), format="mp3")
+        sub_chunks.append(sub_path)
+
+    return sub_chunks
+
+
 def generate_lipsync_clips(script: Script, character: Character,
                             chunks: list[Path], ref_image: Path,
                             output_dir: Path,
@@ -237,47 +267,57 @@ def generate_lipsync_clips(script: Script, character: Character,
     current_image = ref_image
 
     for i, (scene, chunk) in enumerate(zip(script.scenes, chunks)):
-        clip_path = output_dir / "clips" / f"clip_{i + 1:02d}.mp4"
+        # Split long audio chunks into sub-chunks for better lip-sync quality
+        sub_chunks = _split_long_chunk(chunk, MAX_LIPSYNC_CHUNK_SECONDS,
+                                       output_dir, i + 1)
+        n_sub = len(sub_chunks)
 
-        # Resume: skip if exists
-        if clip_path.exists():
-            console.print(f"  Scene {i + 1}/{len(script.scenes)} [{scene.beat}]: cached, skipping.")
-            clips.append(clip_path)
-            # Still try to extract last frame for chaining
-            if i < len(script.scenes) - 1:
+        for j, sub_chunk in enumerate(sub_chunks):
+            if n_sub == 1:
+                clip_path = output_dir / "clips" / f"clip_{i + 1:02d}.mp4"
+                clip_label = f"scene {i + 1}"
+            else:
+                clip_path = output_dir / "clips" / f"clip_{i + 1:02d}_{j + 1:02d}.mp4"
+                clip_label = f"scene {i + 1} part {j + 1}/{n_sub}"
+
+            # Resume: skip if exists
+            if clip_path.exists():
+                console.print(f"  {clip_label} [{scene.beat}]: cached, skipping.")
+                clips.append(clip_path)
                 lf = extract_last_frame(clip_path, output_dir, i + 1)
                 if lf:
                     current_image = lf
-            continue
+                continue
 
-        console.print(f"  Scene {i + 1}/{len(script.scenes)} [{scene.beat}]: generating lip-sync clip...")
+            console.print(f"  {clip_label} [{scene.beat}]: generating lip-sync clip...")
 
-        image_url = retry_api_call(
-            fal_client.upload_file, str(current_image),
-            label=f"upload reference for scene {i + 1}",
-        )
-        audio_url = retry_api_call(
-            fal_client.upload_file, str(chunk),
-            label=f"upload audio chunk {i + 1}",
-        )
+            image_url = retry_api_call(
+                fal_client.upload_file, str(current_image),
+                label=f"upload reference for {clip_label}",
+            )
+            audio_url = retry_api_call(
+                fal_client.upload_file, str(sub_chunk),
+                label=f"upload audio {clip_label}",
+            )
 
-        result = retry_api_call(
-            fal_client.subscribe, MODEL_FABRIC,
-            arguments={"image_url": image_url, "audio_url": audio_url, "resolution": "720p"},
-            label=f"VEED Fabric (scene {i + 1})",
-        )
+            result = retry_api_call(
+                fal_client.subscribe, MODEL_FABRIC,
+                arguments={"image_url": image_url, "audio_url": audio_url, "resolution": "720p"},
+                label=f"VEED Fabric ({clip_label})",
+            )
 
-        safe_download(result["video"]["url"], str(clip_path), label=f"scene {i + 1} lip-sync clip")
-        console.print(f"    Saved: {clip_path.name}")
-        clips.append(clip_path)
+            safe_download(result["video"]["url"], str(clip_path), label=f"{clip_label} lip-sync clip")
+            console.print(f"    Saved: {clip_path.name}")
+            clips.append(clip_path)
 
-        if conn:
-            dur_s = scene.duration_seconds
-            db.log_render_step(conn, script.id, f"lipsync_scene_{i + 1}", "veed-fabric",
-                               dur_s, dur_s * COST_FABRIC)
+            if conn:
+                from pydub import AudioSegment
+                sub_dur_s = len(AudioSegment.from_file(str(sub_chunk))) / 1000.0
+                step_name = f"lipsync_scene_{i + 1}" if n_sub == 1 else f"lipsync_scene_{i + 1}_sub_{j + 1}"
+                db.log_render_step(conn, script.id, step_name, "veed-fabric",
+                                   sub_dur_s, sub_dur_s * COST_FABRIC)
 
-        # Extract last frame for next clip's reference
-        if i < len(script.scenes) - 1:
+            # Extract last frame for next clip's reference
             last_frame = extract_last_frame(clip_path, output_dir, i + 1)
             if last_frame:
                 current_image = last_frame

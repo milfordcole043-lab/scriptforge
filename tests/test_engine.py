@@ -273,6 +273,50 @@ def test_analyze_feedback_patterns(conn: sqlite3.Connection) -> None:
     assert len(patterns["miss_notes"]) == 1
 
 
+# --- POV-specific beat durations ---
+
+
+def test_pov_mode_tighter_revelation_duration(conn: sqlite3.Connection) -> None:
+    db.seed_defaults(conn)
+    ctx = build_write_context(conn, topic="Test", style="cinematic", duration_target=45, mode="pov")
+    # POV mode reduces max duration by 2s for beats > 7s (THE MIRROR: revelation 10-15 -> 10-13)
+    assert "10-13s" in ctx["prompt"]
+    assert "10-15s" not in ctx["prompt"]
+
+
+def test_narrator_mode_keeps_original_durations(conn: sqlite3.Connection) -> None:
+    db.seed_defaults(conn)
+    ctx = build_write_context(conn, topic="Test", style="cinematic", duration_target=45, mode="narrator")
+    assert "10-15s" in ctx["prompt"]
+
+
+def test_pov_mode_tighter_tension_duration(conn: sqlite3.Connection) -> None:
+    db.seed_defaults(conn)
+    ctx = build_write_context(conn, topic="Test", style="cinematic", duration_target=45, mode="pov")
+    # POV mode reduces max duration by 2s for beats > 7s (THE MIRROR: tension 8-12 -> 8-10)
+    assert "8-10s" in ctx["prompt"]
+    assert "8-12s" not in ctx["prompt"]
+
+
 def test_analyze_feedback_patterns_empty(conn: sqlite3.Connection) -> None:
     patterns = analyze_feedback_patterns(conn)
     assert patterns["hit_notes"] == []
+
+
+# --- Variety tracking ---
+
+
+def test_write_context_includes_avoid_repeating(conn: sqlite3.Connection) -> None:
+    _seed_data(conn)
+    db.seed_defaults(conn)
+    ctx = build_write_context(conn, topic="New topic", style="educational", duration_target=45)
+    assert "AVOID REPEATING" in ctx["prompt"]
+    assert "Locations used" in ctx["prompt"]
+    assert "recent_variety" in ctx
+
+
+def test_write_context_variety_empty_db(conn: sqlite3.Connection) -> None:
+    db.seed_defaults(conn)
+    ctx = build_write_context(conn, topic="Fresh", style="cinematic", duration_target=45)
+    # No scripts yet — AVOID REPEATING section should not appear
+    assert "AVOID REPEATING" not in ctx["prompt"]

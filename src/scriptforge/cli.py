@@ -9,7 +9,10 @@ from rich.panel import Panel
 from rich.table import Table
 
 from scriptforge import db
-from scriptforge.engine import analyze_feedback_patterns, build_rewrite_context, build_write_context
+from scriptforge.engine import (
+    analyze_feedback_patterns, build_rewrite_context, build_write_context,
+    generate_topics,
+)
 from scriptforge.pipeline import render_script
 
 console = Console()
@@ -39,19 +42,29 @@ def cli(ctx: click.Context, db_path: str | None) -> None:
 @click.option("--style", "-s", type=click.Choice(["educational", "story", "viral", "cinematic", "explainer"]),
               default="educational", help="Script style.")
 @click.option("--duration", "-d", type=int, default=45, help="Target duration in seconds.")
+@click.option("--template", "-t", default=None, help="Override template (e.g. 'mystery', 'contradiction').")
 @click.option("--no-generate", is_flag=True, hidden=True, help="Show context only (for testing).")
 @click.pass_context
-def write(ctx: click.Context, topic: str, style: str, duration: int, no_generate: bool) -> None:
+def write(ctx: click.Context, topic: str, style: str, duration: int,
+          template: str | None, no_generate: bool) -> None:
     """Write a new script. Assembles context from rulebook, hooks, and feedback."""
     conn = _get_conn(ctx)
-    context = build_write_context(conn, topic=topic, style=style, duration_target=duration)
+    context = build_write_context(conn, topic=topic, style=style, duration_target=duration,
+                                   template_name=template)
     from scriptforge.config import WPM
     wpm = WPM
     word_target = duration * wpm // 60
 
+    tmpl = context["template"]
+    if tmpl:
+        arc_str = " -> ".join(b["beat"] for b in tmpl.beat_structure)
+        tmpl_line = f"\n[bold]Template:[/bold] {tmpl.name} [dim]({context['template_reason']})[/dim]"
+    else:
+        arc_str = "hook -> tension -> revelation -> resolution"
+        tmpl_line = ""
     console.print(Panel(f"[bold]Topic:[/bold] {topic}\n[bold]Style:[/bold] {style}\n"
-                        f"[bold]Duration:[/bold] {duration}s (~{word_target} words at {wpm} wpm)\n"
-                        f"[bold]Arc:[/bold] hook -> tension -> revelation -> resolution",
+                        f"[bold]Duration:[/bold] {duration}s (~{word_target} words at {wpm} wpm)"
+                        f"{tmpl_line}\n[bold]Arc:[/bold] {arc_str}",
                         title="Script Brief"))
 
     if context["voice_profile"]:
@@ -368,6 +381,70 @@ def hooks(ctx: click.Context) -> None:
             rating = f"[{color}]{h.rating}[/{color}]"
         table.add_row(str(h.id), h.text, h.style or "", rating)
     console.print(table)
+
+
+@cli.command()
+@click.pass_context
+def templates(ctx: click.Context) -> None:
+    """List all story templates with success rates."""
+    conn = _get_conn(ctx)
+    tmpl_list = db.get_all_templates(conn)
+    if not tmpl_list:
+        console.print("[dim]No templates found.[/dim]")
+        return
+
+    table = Table(title="Story Templates")
+    table.add_column("Name", style="bold")
+    table.add_column("Description")
+    table.add_column("Beats")
+    table.add_column("Rate", justify="right")
+    table.add_column("Used", justify="right")
+    for t in tmpl_list:
+        beats = " -> ".join(b["beat"] for b in t.beat_structure)
+        rate_str = f"{t.success_rate:.1f}" if t.success_rate > 0 else "-"
+        if t.success_rate >= 4.0:
+            rate_str = f"[green]{rate_str}[/green]"
+        elif t.success_rate >= 3.0:
+            rate_str = f"[yellow]{rate_str}[/yellow]"
+        elif t.success_rate > 0:
+            rate_str = f"[red]{rate_str}[/red]"
+        desc = t.description[:60] + "..." if len(t.description) > 60 else t.description
+        table.add_row(t.name, desc, beats, rate_str, str(t.times_used))
+    console.print(table)
+
+
+@cli.command()
+@click.option("--count", "-c", type=int, default=5, help="Number of topics to generate.")
+@click.pass_context
+def topics(ctx: click.Context, count: int) -> None:
+    """Generate topic suggestions using Claude, informed by templates and history."""
+    conn = _get_conn(ctx)
+    from scriptforge.config import ANTHROPIC_API_KEY
+    if not ANTHROPIC_API_KEY:
+        console.print("[red]ANTHROPIC_API_KEY not set in .env[/red]")
+        return
+
+    console.print(f"[dim]Generating {count} topic ideas...[/dim]\n")
+    try:
+        topic_list = generate_topics(conn, count=count)
+    except Exception as e:
+        console.print(f"[red]Error generating topics: {e}[/red]")
+        return
+
+    if not topic_list:
+        console.print("[dim]No topics generated.[/dim]")
+        return
+
+    table = Table(title="Topic Ideas")
+    table.add_column("#", style="dim", justify="right")
+    table.add_column("Topic", style="bold")
+    table.add_column("Template")
+    table.add_column("Angle")
+    table.add_column("Why", style="dim")
+    for i, t in enumerate(topic_list, 1):
+        table.add_row(str(i), t["topic"], t["template"], t["angle"], t["why"])
+    console.print(table)
+    console.print(f"\n[dim]Use: scriptforge write \"<topic>\" to start writing.[/dim]")
 
 
 # --- rules ---

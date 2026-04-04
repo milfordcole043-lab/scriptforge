@@ -4,7 +4,7 @@ import sqlite3
 
 from scriptforge import db
 from scriptforge.config import WPM
-from scriptforge.models import Character, Scene, Script
+from scriptforge.models import Character, Scene, Script, StoryTemplate
 
 # --- Rule categories for contextual selection ---
 _BEAT_RULES: dict[str, set[str]] = {
@@ -13,6 +13,66 @@ _BEAT_RULES: dict[str, set[str]] = {
     "revelation": {"structure", "storytelling", "prompt"},
     "resolution": {"voice", "structure", "pacing"},
 }
+
+
+# --- Template matching ---
+
+
+def match_template(
+    topic: str,
+    conn: sqlite3.Connection,
+    override_name: str | None = None,
+) -> tuple[StoryTemplate | None, str]:
+    """Match the best story template for a topic. Returns (template, reason)."""
+    templates = db.get_all_templates(conn)
+    if not templates:
+        return None, "no templates available"
+
+    # Manual override
+    if override_name:
+        t = db.get_template_by_name(conn, override_name)
+        if t:
+            return t, "manually selected"
+        # Fall through to auto-match if name not found
+
+    topic_lower = topic.lower()
+    recent_ids = set(db.get_recent_template_ids(conn, limit=3))
+
+    best_template = templates[0]
+    best_score = -999.0
+    best_keywords: list[str] = []
+    any_keyword_hit = False
+
+    for t in templates:
+        # Keyword scoring — check if keyword appears as substring in topic
+        matched = [kw for kw in t.matching_keywords if kw.lower() in topic_lower]
+        score = float(len(matched))
+        if matched:
+            any_keyword_hit = True
+
+        # Success rate bonus
+        score += t.success_rate * 0.5
+
+        # Recency penalty
+        if t.id in recent_ids:
+            score -= 3.0
+
+        if score > best_score:
+            best_score = score
+            best_template = t
+            best_keywords = matched
+
+    # Default to THE MIRROR only if NO template had any keyword match
+    if not any_keyword_hit and best_score <= 0:
+        mirror = db.get_template_by_name(conn, "mirror")
+        if mirror:
+            return mirror, "default (no strong keyword match)"
+
+    if best_keywords:
+        reason = f"matched keywords: {', '.join(best_keywords)}"
+    else:
+        reason = f"highest score ({best_template.name})"
+    return best_template, reason
 
 
 # --- Temporal flow ---
@@ -115,12 +175,12 @@ def build_pov_video_prompt(scene: Scene, character: Character,
     if prev_scene and scene_index > 0:
         sections.append(
             f"[CONTINUITY] Character was just {prev_scene.character_action}. "
-            f"Now {scene.character_action}"
+            f"Now {scene.character_action}. Eyes remain focused on camera throughout"
         )
     elif scene.character_action:
         sections.append(f"[ACTION] {scene.character_action}")
 
-    sections.append("[SPEECH] Talking directly to camera, clear mouth articulation, natural lip movement")
+    sections.append("[SPEECH] Talking directly to camera, eyes locked on camera lens, clear mouth articulation, natural lip movement")
 
     # Light progression
     lighting = scene.lighting
@@ -152,7 +212,9 @@ def build_pov_reference_prompt(character: Character, lighting: str = "",
         parts.append(lighting)
     else:
         parts.append("Soft warm lighting")
-    parts.append("Selfie camera angle, slightly below eye level. Unposed, raw, candid. Shot on phone camera. Consistent lighting throughout")
+    parts.append("Eyes looking directly into camera lens, maintaining eye contact. "
+                 "Selfie camera angle, slightly below eye level. Unposed, raw, candid. "
+                 "Shot on phone camera. Consistent lighting throughout")
     return ". ".join(parts) + "."
 
 
@@ -184,6 +246,42 @@ def _interpolate_lighting(scenes: list[Scene], index: int) -> str:
         return f"Transitioning from {first_lighting} toward {last_lighting}"
 
 
+# --- Variety tracking ---
+
+
+def _extract_recent_variety(conn: sqlite3.Connection, limit: int = 3) -> dict:
+    """Extract locations, lighting, emotions, cameras from the last N scripts."""
+    scripts = db.list_scripts(conn)[:limit]
+    locations: list[str] = []
+    lighting: list[str] = []
+    emotions: list[str] = []
+    cameras: list[str] = []
+    templates: list[str] = []
+
+    for s in scripts:
+        if s.template_id:
+            t = db.get_template(conn, s.template_id)
+            if t:
+                templates.append(t.name)
+        for scene in s.scenes:
+            if scene.location and scene.location not in locations:
+                locations.append(scene.location)
+            if scene.lighting and scene.lighting not in lighting:
+                lighting.append(scene.lighting)
+            if scene.character_emotion and scene.character_emotion not in emotions:
+                emotions.append(scene.character_emotion)
+            if scene.camera and scene.camera not in cameras:
+                cameras.append(scene.camera)
+
+    return {
+        "locations": locations[:6],
+        "lighting": lighting[:6],
+        "emotions": emotions[:6],
+        "cameras": cameras[:6],
+        "templates": templates[:3],
+    }
+
+
 # --- Write context ---
 
 
@@ -193,6 +291,7 @@ def build_write_context(
     style: str,
     duration_target: int,
     mode: str = "narrator",
+    template_name: str | None = None,
 ) -> dict:
     """Assemble all context needed to write a new script."""
     rules = db.get_active_rules(conn)
@@ -200,12 +299,17 @@ def build_write_context(
     patterns = analyze_feedback_patterns(conn)
     voice_profile = db.get_voice_profile(conn)
     scene_patterns = db.analyze_scene_feedback(conn)
+    recent_variety = _extract_recent_variety(conn)
+
+    # Template matching
+    template, template_reason = match_template(topic, conn, override_name=template_name)
 
     # Mode-aware voice profile filtering
     filtered_profile = _filter_voice_profile(voice_profile, mode)
 
     prompt = _build_write_prompt(topic, style, duration_target, rules, top_hooks, patterns,
-                                  filtered_profile, mode, scene_patterns)
+                                  filtered_profile, mode, scene_patterns, template=template,
+                                  recent_variety=recent_variety)
 
     return {
         "topic": topic,
@@ -215,6 +319,9 @@ def build_write_context(
         "top_hooks": top_hooks,
         "feedback_patterns": patterns,
         "voice_profile": filtered_profile,
+        "template": template,
+        "template_reason": template_reason,
+        "recent_variety": recent_variety,
         "prompt": prompt,
     }
 
@@ -279,21 +386,35 @@ def _build_voice_section(voice_profile: list) -> str:
 # --- Contextual rule selection ---
 
 
-def _select_rules_for_beat(rules: list, beat: str) -> list:
+def _select_rules_for_beat(rules: list, beat: str,
+                           rule_categories: set[str] | None = None) -> list:
     """Select the 3-4 most relevant rules for a specific beat."""
-    relevant_categories = _BEAT_RULES.get(beat, set())
+    relevant_categories = rule_categories if rule_categories is not None else _BEAT_RULES.get(beat, set())
     selected = [r for r in rules if r.category in relevant_categories]
     return selected[:4]
 
 
-def _build_contextual_rules_section(rules: list) -> str:
+def _build_contextual_rules_section(rules: list,
+                                    template: StoryTemplate | None = None) -> str:
     """Build per-beat rule sections instead of dumping everything."""
     sections = []
     sections.append("\n--- RULES PER BEAT (apply the rules listed under each beat) ---")
 
-    for beat_name, label in [("hook", "HOOK"), ("tension", "TENSION"),
-                              ("revelation", "REVELATION"), ("resolution", "RESOLUTION")]:
-        beat_rules = _select_rules_for_beat(rules, beat_name)
+    if template:
+        beat_list = [(b["beat"], b["beat"].upper().replace("_", " ")) for b in template.beat_structure]
+    else:
+        beat_list = [("hook", "HOOK"), ("tension", "TENSION"),
+                     ("revelation", "REVELATION"), ("resolution", "RESOLUTION")]
+
+    for beat_name, label in beat_list:
+        # Use template's rule_categories if available
+        cats = None
+        if template:
+            for b in template.beat_structure:
+                if b["beat"] == beat_name:
+                    cats = set(b.get("rule_categories", []))
+                    break
+        beat_rules = _select_rules_for_beat(rules, beat_name, rule_categories=cats)
         if beat_rules:
             sections.append(f"\n  {label}:")
             for r in beat_rules:
@@ -315,6 +436,8 @@ def _build_write_prompt(
     voice_profile: list,
     mode: str = "narrator",
     scene_patterns: dict | None = None,
+    template: StoryTemplate | None = None,
+    recent_variety: dict | None = None,
 ) -> str:
     """Build the full prompt for writing a new script."""
     wpm = WPM
@@ -325,15 +448,42 @@ def _build_write_prompt(
     sections.append(f"Target duration: {duration_target} seconds (~{word_target} words at {wpm} wpm)")
     sections.append(f"Mode: {mode}")
 
-    sections.append("\n--- NARRATIVE ARC (4 beats, every script needs all 4) ---")
-    sections.append("1. HOOK (2-3s) -- Start in a personal moment. Make the viewer FEEL before they learn. Visual hook must work without sound.")
-    sections.append("2. TENSION (8-12s) -- Deepen the feeling. Make the viewer need the answer. One emotion, let it breathe.")
-    sections.append("3. REVELATION (10-15s) -- The science/insight as a twist. Reframes everything. Feeling first, facts second.")
-    sections.append("4. RESOLUTION (5-7s) -- Reframe, not advice. Short. Powerful. Let the viewer draw their own conclusion.")
+    if template:
+        # Template-driven narrative arc
+        n_beats = len(template.beat_structure)
+        sections.append(f"\n--- STORY TEMPLATE: {template.name} ---")
+        sections.append(f"Structure: {template.description}")
+        sections.append(f"Visual style: {template.visual_style}")
+        sections.append(f"\n--- NARRATIVE ARC ({n_beats} beats, every script needs all {n_beats}) ---")
+        for i, b in enumerate(template.beat_structure, 1):
+            dur_min = b["duration_min"]
+            dur_max = b["duration_max"]
+            # POV lip-sync constraint: reduce max duration for longer beats
+            if mode == "pov" and dur_max > 7:
+                dur_max = max(dur_min, dur_max - 2)
+            sections.append(f"{i}. {b['beat'].upper()} ({dur_min}-{dur_max}s) -- {b['description']}")
+    else:
+        sections.append("\n--- NARRATIVE ARC (4 beats, every script needs all 4) ---")
+        if mode == "pov":
+            sections.append("1. HOOK (2-3s) -- Start in a personal moment. Make the viewer FEEL before they learn. Visual hook must work without sound.")
+            sections.append("2. TENSION (6-10s) -- Deepen the feeling. Make the viewer need the answer. One emotion, let it breathe.")
+            sections.append("3. REVELATION (7-10s) -- The science/insight as a twist. Reframes everything. Keep it tight — lip sync degrades on longer clips.")
+            sections.append("4. RESOLUTION (5-7s) -- Reframe, not advice. Short. Powerful. Let the viewer draw their own conclusion.")
+        else:
+            sections.append("1. HOOK (2-3s) -- Start in a personal moment. Make the viewer FEEL before they learn. Visual hook must work without sound.")
+            sections.append("2. TENSION (8-12s) -- Deepen the feeling. Make the viewer need the answer. One emotion, let it breathe.")
+            sections.append("3. REVELATION (10-15s) -- The science/insight as a twist. Reframes everything. Feeling first, facts second.")
+            sections.append("4. RESOLUTION (5-7s) -- Reframe, not advice. Short. Powerful. Let the viewer draw their own conclusion.")
     sections.append("Build in 1-2 second pauses between beats where only visuals + sound carry the moment.")
 
+    # Beat names for scene format
+    if template:
+        beat_names = "/".join(b["beat"] for b in template.beat_structure)
+    else:
+        beat_names = "hook/tension/revelation/resolution"
+
     sections.append("\n--- SCENE FORMAT (for each scene) ---")
-    sections.append("beat: hook/tension/revelation/resolution")
+    sections.append(f"beat: {beat_names}")
     if mode == "pov":
         sections.append("dialogue: (first person 'I/me', raw speech, messy, real)")
     else:
@@ -353,7 +503,7 @@ def _build_write_prompt(
 
     # Contextual rules per beat instead of dumping all
     if rules:
-        sections.append(_build_contextual_rules_section(rules))
+        sections.append(_build_contextual_rules_section(rules, template=template))
 
     if top_hooks:
         sections.append("\n--- TOP HOOKS (use as inspiration) ---")
@@ -370,6 +520,22 @@ def _build_write_prompt(
         sections.append("\n--- WHAT TO AVOID (from past misses) ---")
         for note in patterns["miss_notes"][:5]:
             sections.append(f"- {note}")
+
+    if recent_variety:
+        has_data = any(recent_variety.get(k) for k in ("locations", "lighting", "emotions", "cameras"))
+        if has_data:
+            sections.append("\n--- AVOID REPEATING (from last 3 scripts — choose something DIFFERENT) ---")
+            if recent_variety.get("locations"):
+                sections.append(f"Locations used: {', '.join(recent_variety['locations'])}")
+            if recent_variety.get("lighting"):
+                sections.append(f"Lighting used: {', '.join(recent_variety['lighting'])}")
+            if recent_variety.get("emotions"):
+                sections.append(f"Emotional starts: {', '.join(recent_variety['emotions'])}")
+            if recent_variety.get("cameras"):
+                sections.append(f"Camera styles: {', '.join(recent_variety['cameras'])}")
+            if recent_variety.get("templates"):
+                sections.append(f"Templates used: {', '.join(recent_variety['templates'])}")
+            sections.append("Each video must feel like a different moment in a different day.")
 
     if scene_patterns and scene_patterns.get("patterns"):
         sections.append("\n--- DATA-DRIVEN INSIGHTS (from scene-level feedback) ---")
@@ -402,3 +568,114 @@ def _build_rewrite_prompt(script: Script, feedback_text: str, rules: list, voice
     sections.append("\nAddress the feedback while keeping what worked. Follow the 4-beat arc. Include captions for every scene.")
 
     return "\n".join(sections)
+
+
+# --- Topic generation ---
+
+
+def _build_topic_prompt(
+    templates: list[StoryTemplate],
+    existing_topics: list[str],
+    past_suggestions: list[str],
+    findings: list,
+    patterns: dict,
+    count: int,
+) -> str:
+    """Build the prompt for Claude to generate topic suggestions."""
+    sections = []
+
+    sections.append(f"Generate exactly {count} specific video topic ideas for a faceless YouTube channel.")
+    sections.append("Niche: psychology, the human body, and relationships.")
+    sections.append("Each topic must be phrased as a scroll-stopping hook — specific, not broad.")
+    sections.append('Example of specific: "why your gut makes better dating decisions than your brain"')
+    sections.append('Example of too broad: "the gut-brain connection"')
+
+    sections.append(f"\n--- STORY TEMPLATES (spread topics across these, don't use the same one more than twice) ---")
+    for t in templates:
+        keywords = ", ".join(t.matching_keywords[:5])
+        sections.append(f"- {t.name}: {t.description} (keywords: {keywords})")
+
+    if existing_topics:
+        sections.append("\n--- EXISTING SCRIPTS (avoid these topics) ---")
+        for topic in existing_topics[:20]:
+            sections.append(f"- {topic}")
+
+    if past_suggestions:
+        sections.append("\n--- PAST SUGGESTIONS (avoid repeating) ---")
+        for topic in past_suggestions[:20]:
+            sections.append(f"- {topic}")
+
+    if findings:
+        sections.append("\n--- RESEARCH FINDINGS (use as inspiration) ---")
+        for f in findings[:10]:
+            sections.append(f"- [{f.category}] {f.finding}")
+
+    if patterns.get("hit_notes"):
+        sections.append("\n--- WHAT WORKS (from past hits) ---")
+        for note in patterns["hit_notes"][:5]:
+            sections.append(f"- {note}")
+
+    if patterns.get("miss_notes"):
+        sections.append("\n--- WHAT TO AVOID (from past misses) ---")
+        for note in patterns["miss_notes"][:5]:
+            sections.append(f"- {note}")
+
+    sections.append(f"\nReturn ONLY a JSON array of {count} objects, each with:")
+    sections.append('  "topic": the specific topic phrased as a hook')
+    sections.append('  "template": which template name fits best (e.g. "THE MIRROR")')
+    sections.append('  "angle": the unique perspective or hook that makes this specific')
+    sections.append('  "why": one sentence on why this would perform well')
+    sections.append("\nNo markdown, no explanation. Just the JSON array.")
+
+    return "\n".join(sections)
+
+
+def generate_topics(conn: sqlite3.Connection, count: int = 5) -> list[dict]:
+    """Generate topic suggestions using Claude, informed by templates and history."""
+    import json
+
+    import anthropic
+    from scriptforge.config import ANTHROPIC_API_KEY, retry_api_call
+
+    if not ANTHROPIC_API_KEY:
+        raise ValueError("ANTHROPIC_API_KEY not set in .env")
+
+    templates = db.get_all_templates(conn)
+    scripts = db.list_scripts(conn)
+    existing_topics = [s.topic for s in scripts]
+    past_suggestions = [t["topic"] for t in db.get_generated_topics(conn)]
+    findings = db.get_findings(conn)
+    patterns = analyze_feedback_patterns(conn)
+
+    prompt = _build_topic_prompt(templates, existing_topics, past_suggestions,
+                                  findings, patterns, count)
+
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+    def _call_claude() -> list[dict]:
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text
+        start = text.find("[")
+        end = text.rfind("]") + 1
+        if start >= 0 and end > start:
+            return json.loads(text[start:end])
+        raise ValueError("Could not parse topics JSON from response")
+
+    topics = retry_api_call(_call_claude, label="Claude topic generation")
+
+    # Validate structure
+    validated = []
+    for t in topics[:count]:
+        validated.append({
+            "topic": t.get("topic", ""),
+            "template": t.get("template", "THE MIRROR"),
+            "angle": t.get("angle", ""),
+            "why": t.get("why", ""),
+        })
+
+    db.save_generated_topics(conn, validated)
+    return validated

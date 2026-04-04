@@ -6,7 +6,8 @@ from pathlib import Path
 
 from scriptforge.models import (
     Character, FeedbackEntry, Finding, Hook, PromptRule, Rule, Scene,
-    SceneFeedback, SceneReview, Script, VideoReview, VoiceProfile, validate_script,
+    SceneFeedback, SceneReview, Script, StoryTemplate, VideoReview,
+    VoiceProfile, validate_script,
 )
 
 DEFAULT_DB = Path.home() / ".scriptforge" / "scriptforge.db"
@@ -166,6 +167,32 @@ CREATE TABLE IF NOT EXISTS scene_feedback (
 );
 """
 
+_CREATE_STORY_TEMPLATES = """
+CREATE TABLE IF NOT EXISTS story_templates (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    name              TEXT    NOT NULL UNIQUE,
+    description       TEXT    NOT NULL,
+    beat_structure    TEXT    NOT NULL,
+    matching_keywords TEXT    NOT NULL,
+    visual_style      TEXT    NOT NULL DEFAULT '',
+    success_rate      REAL    DEFAULT 0.0,
+    times_used        INTEGER DEFAULT 0,
+    created_at        TEXT    NOT NULL
+);
+"""
+
+_CREATE_TOPICS_GENERATED = """
+CREATE TABLE IF NOT EXISTS topics_generated (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic          TEXT    NOT NULL,
+    template_name  TEXT    NOT NULL,
+    angle          TEXT    NOT NULL,
+    why            TEXT    NOT NULL DEFAULT '',
+    generated_at   TEXT    NOT NULL,
+    used           INTEGER DEFAULT 0
+);
+"""
+
 _DEFAULT_PROMPT_RULES = [
     ("subject", "describe one primary subject per scene, be specific about appearance", 9),
     ("camera", "always specify camera movement -- tracking, dolly, crane, static, handheld", 8),
@@ -186,6 +213,7 @@ _DEFAULT_PROMPT_RULES = [
     ("lipsync_chain", "extract last frame of each clip and use as reference for next clip", 5),
     ("lipsync_angle", "front-facing or 3/4 angle only for lip sync accuracy", 7),
     ("lipsync_camera", "phone camera perspective: slightly below eye level, subtle handheld wobble", 6),
+    ("lipsync_gaze", "POV character must maintain direct eye contact with camera lens throughout every scene", 8),
 ]
 
 _DEFAULT_RULES = [
@@ -211,6 +239,13 @@ _DEFAULT_RULES = [
     ("First person always in POV mode. 'I can't sleep' not 'you can't sleep'", "pov", "pov system"),
     ("End with a feeling the viewer carries, not a conclusion. Make them want to comment.", "pov", "pov system"),
     ("Keep each sentence short enough to be one video chunk (3-7 seconds of speech max)", "pov", "pov system"),
+    # Variety rules
+    ("Never repeat the same location in consecutive scripts. Track what was used last and choose something different.", "variety", "variety system"),
+    ("Never repeat the same lighting in consecutive scripts. Alternate: phone light, dawn, streetlight, neon, candlelight, overcast, fluorescent.", "variety", "variety system"),
+    ("Vary the emotional starting point. Not always sadness. Use: confusion, anger, nervous energy, forced calm, fake happiness, numbness, restless energy.", "variety", "variety system"),
+    ("Vary time of day. Not always 3 AM. Use: golden hour, lunch break, crowded room, walking home at night, morning after, sunset, bathroom at work.", "variety", "variety system"),
+    ("Vary camera energy for POV. Not always static selfie. Use: walking and talking, sitting in car, lying on floor, pacing, leaning against wall, standing at window.", "variety", "variety system"),
+    ("Each video must feel like a different moment in a different day -- not the same night replayed with different words.", "variety", "variety system"),
 ]
 
 _DEFAULT_VOICE_PROFILE = [
@@ -222,6 +257,81 @@ _DEFAULT_VOICE_PROFILE = [
     ("pov_person", "first person (I/me/my)"),
     ("pov_style", "raw confessional, like talking to phone camera at 3 AM"),
     ("pov_pacing", "natural speech with pauses, restarts, trailing off. NOT polished."),
+]
+
+_DEFAULT_STORY_TEMPLATES = [
+    {
+        "name": "THE MIRROR",
+        "description": "Start with the viewer's experience, reveal the science. Best for emotional experiences everyone shares.",
+        "beat_structure": [
+            {"beat": "hook", "description": "personal moment", "duration_min": 2, "duration_max": 3, "rule_categories": ["hook", "caption", "visual", "prompt"]},
+            {"beat": "tension", "description": "deepen the feeling", "duration_min": 8, "duration_max": 12, "rule_categories": ["emotion", "pacing", "character", "location"]},
+            {"beat": "revelation", "description": "science/insight as a twist that reframes everything", "duration_min": 10, "duration_max": 15, "rule_categories": ["structure", "storytelling", "prompt"]},
+            {"beat": "resolution", "description": "reframe, not advice — short and powerful", "duration_min": 5, "duration_max": 7, "rule_categories": ["voice", "structure", "pacing"]},
+        ],
+        "matching_keywords": ["heartbreak", "anxiety", "falling in love", "jealousy", "loneliness", "grief", "rejection"],
+        "visual_style": "intimate, single location, time progression from dark to light",
+    },
+    {
+        "name": "THE MYSTERY",
+        "description": "Start with a question the viewer can't answer. Build clues. Reveal the answer. Best for 'why' questions about human behavior.",
+        "beat_structure": [
+            {"beat": "question", "description": "unanswerable hook that grabs curiosity", "duration_min": 2, "duration_max": 3, "rule_categories": ["hook", "caption", "visual", "prompt"]},
+            {"beat": "clues", "description": "build evidence, deepen the mystery", "duration_min": 8, "duration_max": 10, "rule_categories": ["emotion", "pacing", "character", "location"]},
+            {"beat": "reveal", "description": "the surprising answer", "duration_min": 8, "duration_max": 10, "rule_categories": ["structure", "storytelling", "prompt"]},
+            {"beat": "reframe", "description": "new understanding that changes perspective", "duration_min": 5, "duration_max": 5, "rule_categories": ["voice", "structure", "pacing"]},
+        ],
+        "matching_keywords": ["why", "always", "never", "can't stop", "keep doing", "pattern", "repeat", "habit"],
+        "visual_style": "progressive reveal, lighting gets brighter as answer approaches",
+    },
+    {
+        "name": "THE CONTRADICTION",
+        "description": "Open with two truths that seem impossible together. Explain how both are true. Best for counterintuitive psychology.",
+        "beat_structure": [
+            {"beat": "paradox", "description": "two conflicting truths presented together", "duration_min": 3, "duration_max": 4, "rule_categories": ["hook", "caption", "visual", "prompt"]},
+            {"beat": "side_a", "description": "first truth explained and felt", "duration_min": 7, "duration_max": 8, "rule_categories": ["emotion", "pacing", "character", "location"]},
+            {"beat": "side_b", "description": "second truth explained and felt", "duration_min": 7, "duration_max": 8, "rule_categories": ["emotion", "pacing", "character", "location"]},
+            {"beat": "synthesis", "description": "how both truths coexist — the deeper insight", "duration_min": 4, "duration_max": 5, "rule_categories": ["voice", "structure", "pacing"]},
+        ],
+        "matching_keywords": ["but", "both", "contradicts", "opposite", "paradox", "makes no sense", "weird"],
+        "visual_style": "split energy — visual contrast between the two sides, merging at resolution",
+    },
+    {
+        "name": "THE TIMELINE",
+        "description": "Walk through a process in real time. Best for body processes and biological sequences.",
+        "beat_structure": [
+            {"beat": "start", "description": "the first moment — ground the viewer in time", "duration_min": 2, "duration_max": 3, "rule_categories": ["hook", "caption", "visual", "prompt"]},
+            {"beat": "escalation", "description": "the process builds and intensifies", "duration_min": 10, "duration_max": 12, "rule_categories": ["emotion", "pacing", "character", "location"]},
+            {"beat": "peak", "description": "the climax of the process", "duration_min": 7, "duration_max": 8, "rule_categories": ["structure", "storytelling", "prompt"]},
+            {"beat": "aftermath", "description": "what happens next — the comedown or consequence", "duration_min": 4, "duration_max": 5, "rule_categories": ["voice", "structure", "pacing"]},
+        ],
+        "matching_keywords": ["seconds", "minutes", "first", "then", "happens", "process", "stages", "when you"],
+        "visual_style": "clock-like progression, same character experiencing each stage in sequence",
+    },
+    {
+        "name": "THE CONFESSION",
+        "description": "First person vulnerability. The character admits something. Best for destigmatizing mental health and human behavior.",
+        "beat_structure": [
+            {"beat": "admission", "description": "vulnerable opening — the thing they need to say", "duration_min": 3, "duration_max": 4, "rule_categories": ["hook", "caption", "visual", "prompt"]},
+            {"beat": "backstory", "description": "what led here — the weight of carrying this", "duration_min": 8, "duration_max": 10, "rule_categories": ["emotion", "pacing", "character", "location"]},
+            {"beat": "discovery", "description": "what I learned — the turning point", "duration_min": 8, "duration_max": 10, "rule_categories": ["structure", "storytelling", "prompt"]},
+            {"beat": "acceptance", "description": "making peace — not fixing, accepting", "duration_min": 4, "duration_max": 5, "rule_categories": ["voice", "structure", "pacing"]},
+        ],
+        "matching_keywords": ["thought I was broken", "ashamed", "wrong with me", "nobody talks about", "secret", "always hid"],
+        "visual_style": "extreme close-up, eye contact throughout, almost uncomfortably intimate",
+    },
+    {
+        "name": "THE ZOOM OUT",
+        "description": "Start with one tiny detail, keep zooming out until the big picture is revealed. Best for mind-blowing body facts.",
+        "beat_structure": [
+            {"beat": "micro", "description": "tiny detail — one sensation or body part", "duration_min": 2, "duration_max": 3, "rule_categories": ["hook", "caption", "visual", "prompt"]},
+            {"beat": "expand", "description": "what it connects to — the next layer", "duration_min": 7, "duration_max": 8, "rule_categories": ["emotion", "pacing", "character", "location"]},
+            {"beat": "bigger", "description": "the larger system at work", "duration_min": 8, "duration_max": 10, "rule_categories": ["structure", "storytelling", "prompt"]},
+            {"beat": "macro", "description": "the mind-blow — full picture revealed", "duration_min": 4, "duration_max": 5, "rule_categories": ["voice", "structure", "pacing"]},
+        ],
+        "matching_keywords": ["that feeling", "knot in your stomach", "goosebumps", "chills", "shiver", "tingling", "pupils"],
+        "visual_style": "literal visual zoom — start tight, end wide. Or conceptual zoom from body detail to full system",
+    },
 ]
 
 
@@ -241,6 +351,8 @@ def connect(db_path: Path = DEFAULT_DB) -> sqlite3.Connection:
     conn.execute(_CREATE_RENDER_LOG)
     conn.execute(_CREATE_VIDEO_REVIEWS)
     conn.execute(_CREATE_SCENE_FEEDBACK)
+    conn.execute(_CREATE_STORY_TEMPLATES)
+    conn.execute(_CREATE_TOPICS_GENERATED)
     _migrate(conn)
     conn.commit()
     return conn
@@ -252,6 +364,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE scripts ADD COLUMN character_id INTEGER")
     if "mode" not in columns:
         conn.execute("ALTER TABLE scripts ADD COLUMN mode TEXT DEFAULT 'narrator'")
+    if "template_id" not in columns:
+        conn.execute("ALTER TABLE scripts ADD COLUMN template_id INTEGER")
 
 
 def seed_defaults(conn: sqlite3.Connection) -> None:
@@ -282,6 +396,18 @@ def seed_defaults(conn: sqlite3.Connection) -> None:
                 "INSERT INTO prompt_rules (element, rule, weight, source, created_at) VALUES (?, ?, ?, ?, ?)",
                 (element, rule, weight, "default seed", now),
             )
+
+    import json as _json
+    tmpl_count = conn.execute("SELECT COUNT(*) FROM story_templates").fetchone()[0]
+    if tmpl_count == 0:
+        now = datetime.now().isoformat()
+        for t in _DEFAULT_STORY_TEMPLATES:
+            conn.execute(
+                "INSERT INTO story_templates (name, description, beat_structure, "
+                "matching_keywords, visual_style, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (t["name"], t["description"], _json.dumps(t["beat_structure"]),
+                 _json.dumps(t["matching_keywords"]), t["visual_style"], now),
+            )
     conn.commit()
 
 
@@ -302,8 +428,11 @@ def add_script(
     character_id: int | None = None,
     mode: str = "narrator",
     tags: list[str] | None = None,
+    template_id: int | None = None,
 ) -> Script:
-    errors = validate_script(scenes, full_script)
+    # Fetch template for validation if provided
+    template = get_template(conn, template_id) if template_id else None
+    errors = validate_script(scenes, full_script, template=template)
     if errors:
         raise ValueError(f"Script validation failed: {'; '.join(errors)}")
     now = datetime.now().isoformat()
@@ -314,10 +443,12 @@ def add_script(
     ).scenes_json
     cur = conn.execute(
         "INSERT INTO scripts (topic, angle, style, duration_target, hook, "
-        "scenes, full_script, word_count, version, parent_id, character_id, mode, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "scenes, full_script, word_count, version, parent_id, character_id, "
+        "template_id, mode, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (topic, angle, style, duration_target, hook,
-         scenes_json, full_script, word_count, version, parent_id, character_id, mode, now),
+         scenes_json, full_script, word_count, version, parent_id, character_id,
+         template_id, mode, now),
     )
     script_id = cur.lastrowid
     tag_list = tags or []
@@ -333,7 +464,7 @@ def add_script(
         id=script_id, topic=topic, hook=hook, scenes=scenes,
         full_script=full_script, style=style, duration_target=duration_target,
         angle=angle, word_count=word_count, character_id=character_id,
-        mode=mode, version=version, parent_id=parent_id,
+        template_id=template_id, mode=mode, version=version, parent_id=parent_id,
         created_at=datetime.fromisoformat(now), tags=tag_list,
     )
 
@@ -341,7 +472,7 @@ def add_script(
 def get_script(conn: sqlite3.Connection, script_id: int) -> Script | None:
     row = conn.execute(
         "SELECT id, topic, angle, style, duration_target, hook, scenes, "
-        "full_script, word_count, rating, feedback, version, parent_id, character_id, mode, created_at "
+        "full_script, word_count, rating, feedback, version, parent_id, character_id, template_id, mode, created_at "
         "FROM scripts WHERE id = ?",
         (script_id,),
     ).fetchone()
@@ -355,7 +486,7 @@ def get_script(conn: sqlite3.Connection, script_id: int) -> Script | None:
 def list_scripts(conn: sqlite3.Connection) -> list[Script]:
     rows = conn.execute(
         "SELECT id, topic, angle, style, duration_target, hook, scenes, "
-        "full_script, word_count, rating, feedback, version, parent_id, character_id, mode, created_at "
+        "full_script, word_count, rating, feedback, version, parent_id, character_id, template_id, mode, created_at "
         "FROM scripts ORDER BY created_at DESC",
     ).fetchall()
     scripts = [_row_to_script(r) for r in rows]
@@ -385,7 +516,7 @@ def search_scripts(conn: sqlite3.Connection, query: str) -> list[Script]:
     pattern = f"%{query}%"
     rows = conn.execute(
         "SELECT id, topic, angle, style, duration_target, hook, scenes, "
-        "full_script, word_count, rating, feedback, version, parent_id, character_id, mode, created_at "
+        "full_script, word_count, rating, feedback, version, parent_id, character_id, template_id, mode, created_at "
         "FROM scripts WHERE topic LIKE ? OR full_script LIKE ? OR hook LIKE ? "
         "ORDER BY created_at DESC",
         (pattern, pattern, pattern),
@@ -813,7 +944,142 @@ def analyze_scene_feedback(conn: sqlite3.Connection) -> dict:
             avg = sum(scores) / len(scores)
             patterns.append(f"{bucket} scenes average {avg:.1f}/5 ({len(scores)} samples)")
 
+    # POV lip-sync quality correlation with duration
+    pov_lip_dur: dict[str, list[float]] = {}
+    for r in rows:
+        idx, vis, emo, pace, lip, scenes_json, mode = r
+        if mode == "pov" and lip is not None:
+            scenes = json.loads(scenes_json)
+            if idx < len(scenes):
+                dur = scenes[idx].get("duration_seconds", 0)
+                dur_bucket = "short (3-5s)" if dur <= 5 else "medium (6-10s)" if dur <= 10 else "long (11s+)"
+                pov_lip_dur.setdefault(dur_bucket, []).append(lip)
+
+    for bucket, scores in sorted(pov_lip_dur.items()):
+        if len(scores) >= 2:
+            avg = sum(scores) / len(scores)
+            patterns.append(f"POV lip-sync in {bucket} clips: {avg:.1f}/5 ({len(scores)} samples)")
+
     return {"patterns": patterns, "total_feedback": len(rows)}
+
+
+# --- Story Templates ---
+
+
+def _row_to_template(row: tuple) -> StoryTemplate:
+    import json as _json
+    return StoryTemplate(
+        id=row[0],
+        name=row[1],
+        description=row[2],
+        beat_structure=_json.loads(row[3]),
+        matching_keywords=_json.loads(row[4]),
+        visual_style=row[5],
+        success_rate=row[6],
+        times_used=row[7],
+        created_at=datetime.fromisoformat(row[8]),
+    )
+
+
+def get_all_templates(conn: sqlite3.Connection) -> list[StoryTemplate]:
+    """Return all story templates ordered by success rate (highest first)."""
+    rows = conn.execute(
+        "SELECT id, name, description, beat_structure, matching_keywords, "
+        "visual_style, success_rate, times_used, created_at "
+        "FROM story_templates ORDER BY success_rate DESC",
+    ).fetchall()
+    return [_row_to_template(r) for r in rows]
+
+
+def get_template(conn: sqlite3.Connection, template_id: int) -> StoryTemplate | None:
+    """Fetch a single template by ID."""
+    row = conn.execute(
+        "SELECT id, name, description, beat_structure, matching_keywords, "
+        "visual_style, success_rate, times_used, created_at "
+        "FROM story_templates WHERE id = ?",
+        (template_id,),
+    ).fetchone()
+    return _row_to_template(row) if row else None
+
+
+def get_template_by_name(conn: sqlite3.Connection, name: str) -> StoryTemplate | None:
+    """Fetch a template by name (case-insensitive partial match)."""
+    row = conn.execute(
+        "SELECT id, name, description, beat_structure, matching_keywords, "
+        "visual_style, success_rate, times_used, created_at "
+        "FROM story_templates WHERE UPPER(name) LIKE '%' || UPPER(?) || '%'",
+        (name,),
+    ).fetchone()
+    return _row_to_template(row) if row else None
+
+
+def increment_template_usage(conn: sqlite3.Connection, template_id: int) -> None:
+    """Increment the times_used counter for a template."""
+    conn.execute(
+        "UPDATE story_templates SET times_used = times_used + 1 WHERE id = ?",
+        (template_id,),
+    )
+    conn.commit()
+
+
+def update_template_success_rate(conn: sqlite3.Connection, template_id: int) -> float:
+    """Recalculate success rate from scene feedback of scripts using this template."""
+    row = conn.execute(
+        "SELECT AVG((sf.visual_quality + sf.emotional_impact + sf.pacing) / 3.0) "
+        "FROM scene_feedback sf JOIN scripts s ON sf.script_id = s.id "
+        "WHERE s.template_id = ?",
+        (template_id,),
+    ).fetchone()
+    rate = round(row[0], 2) if row and row[0] is not None else 0.0
+    conn.execute(
+        "UPDATE story_templates SET success_rate = ? WHERE id = ?",
+        (rate, template_id),
+    )
+    conn.commit()
+    return rate
+
+
+def get_recent_template_ids(conn: sqlite3.Connection, limit: int = 3) -> list[int]:
+    """Return template_ids of the most recently created scripts."""
+    rows = conn.execute(
+        "SELECT template_id FROM scripts WHERE template_id IS NOT NULL "
+        "ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+# --- Generated Topics ---
+
+
+def save_generated_topics(conn: sqlite3.Connection, topics: list[dict]) -> None:
+    """Bulk insert generated topic suggestions."""
+    now = datetime.now().isoformat()
+    for t in topics:
+        conn.execute(
+            "INSERT INTO topics_generated (topic, template_name, angle, why, generated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (t["topic"], t["template"], t["angle"], t.get("why", ""), now),
+        )
+    conn.commit()
+
+
+def get_generated_topics(conn: sqlite3.Connection, *,
+                          unused_only: bool = False) -> list[dict]:
+    """Retrieve past topic suggestions."""
+    query = "SELECT id, topic, template_name, angle, why, used FROM topics_generated"
+    if unused_only:
+        query += " WHERE used = 0"
+    query += " ORDER BY generated_at DESC"
+    rows = conn.execute(query).fetchall()
+    return [{"id": r[0], "topic": r[1], "template": r[2], "angle": r[3],
+             "why": r[4], "used": bool(r[5])} for r in rows]
+
+
+def mark_topic_used(conn: sqlite3.Connection, topic_id: int) -> None:
+    """Mark a generated topic as used."""
+    conn.execute("UPDATE topics_generated SET used = 1 WHERE id = ?", (topic_id,))
+    conn.commit()
 
 
 # --- Internal ---
@@ -835,6 +1101,7 @@ def _row_to_script(row: tuple) -> Script:
         version=row[11],
         parent_id=row[12],
         character_id=row[13],
-        mode=row[14] or "narrator",
-        created_at=datetime.fromisoformat(row[15]),
+        template_id=row[14],
+        mode=row[15] or "narrator",
+        created_at=datetime.fromisoformat(row[16]),
     )
