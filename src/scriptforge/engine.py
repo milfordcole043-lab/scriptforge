@@ -199,20 +199,30 @@ def build_pov_video_prompt(scene: Scene, character: Character,
     return ". ".join(sections) + "."
 
 
+_TONE_PRESENTATION = {
+    "empowering": "confident expression, bright alert eyes, good posture, warm natural smile",
+    "vulnerable": "introspective expression, softer gaze, slightly hunched, quiet vulnerability",
+    "curious": "slightly raised eyebrows, alert interested eyes, natural half-smile, engaged expression",
+    "intense": "sharp focused gaze, direct eye contact, still and composed, dramatic presence",
+}
+
+
 def build_pov_reference_prompt(character: Character, lighting: str = "",
                                 hook_emotion: str = "",
-                                outfit_override: str | None = None) -> str:
+                                outfit_override: str | None = None,
+                                tone: str = "empowering") -> str:
     """Build a Flux Pro prompt for a POV selfie reference portrait with emotional state."""
     clothing = outfit_override or character.clothing
     parts = [
         f"A {character.gender} in {character.age} with {character.appearance}, "
         f"wearing {clothing}",
     ]
-    # Emotional state from hook scene — far more important than generic smile
+    # Tone-based presentation overrides default emotion
+    tone_desc = _TONE_PRESENTATION.get(tone, _TONE_PRESENTATION["empowering"])
     if hook_emotion:
-        parts.append(f"{hook_emotion}, lips slightly parted showing teeth")
+        parts.append(f"{hook_emotion}, {tone_desc}, lips slightly parted showing teeth")
     else:
-        parts.append("Exhausted expression, lips slightly parted showing teeth, eyes heavy and tired")
+        parts.append(f"{tone_desc}, lips slightly parted showing teeth")
     parts.append("Holding phone in selfie position")
     if lighting:
         parts.append(lighting)
@@ -270,10 +280,8 @@ def _extract_recent_variety(conn: sqlite3.Connection, limit: int = 3) -> dict:
             t = db.get_template(conn, s.template_id)
             if t:
                 templates.append(t.name)
-        if s.character_id:
-            char = db.get_character(conn, s.character_id)
-            if char and char.clothing and char.clothing not in outfits:
-                outfits.append(char.clothing)
+        if s.outfit and s.outfit not in outfits:
+            outfits.append(s.outfit)
         for scene in s.scenes:
             if scene.location and scene.location not in locations:
                 locations.append(scene.location)
@@ -298,19 +306,40 @@ def _extract_recent_variety(conn: sqlite3.Connection, limit: int = 3) -> dict:
 
 
 def _pick_outfit(conn: sqlite3.Connection, character_id: int | None,
-                  recent_outfits: list[str]) -> str | None:
-    """Pick an outfit from character wardrobe that wasn't used recently."""
+                  recent_outfits: list[str],
+                  tone: str | None = None) -> str | None:
+    """Pick an outfit from character wardrobe matching tone, avoiding recent outfits."""
     if not character_id:
         return None
     char = db.get_character(conn, character_id)
     if not char or not char.wardrobe:
         return None
-    # Pick first outfit not in recent list
-    for outfit in char.wardrobe:
-        if outfit not in recent_outfits:
-            return outfit
-    # All used recently — just pick the first one
-    return char.wardrobe[0]
+
+    # Filter by tone first if provided
+    if tone:
+        tone_matches = [w for w in char.wardrobe
+                        if tone in w.get("tones", [])]
+    else:
+        tone_matches = char.wardrobe
+
+    # Pick first tone-matching outfit not used recently
+    for w in tone_matches:
+        outfit_name = w.get("outfit", "") if isinstance(w, dict) else w
+        if outfit_name and outfit_name not in recent_outfits:
+            return outfit_name
+
+    # Fallback: any outfit not used recently
+    for w in char.wardrobe:
+        outfit_name = w.get("outfit", "") if isinstance(w, dict) else w
+        if outfit_name and outfit_name not in recent_outfits:
+            return outfit_name
+
+    # All used recently — pick first tone match or first overall
+    if tone_matches:
+        w = tone_matches[0]
+        return w.get("outfit", "") if isinstance(w, dict) else w
+    w = char.wardrobe[0]
+    return w.get("outfit", "") if isinstance(w, dict) else w
 
 
 def build_write_context(
@@ -321,6 +350,7 @@ def build_write_context(
     mode: str = "narrator",
     template_name: str | None = None,
     character_id: int | None = None,
+    tone: str = "empowering",
 ) -> dict:
     """Assemble all context needed to write a new script."""
     rules = db.get_active_rules(conn)
@@ -333,8 +363,8 @@ def build_write_context(
     # Template matching
     template, template_reason = match_template(topic, conn, override_name=template_name)
 
-    # Outfit selection from wardrobe
-    outfit = _pick_outfit(conn, character_id, recent_variety.get("outfits", []))
+    # Outfit selection from wardrobe (tone-aware)
+    outfit = _pick_outfit(conn, character_id, recent_variety.get("outfits", []), tone=tone)
 
     # Mode-aware voice profile filtering
     filtered_profile = _filter_voice_profile(voice_profile, mode)

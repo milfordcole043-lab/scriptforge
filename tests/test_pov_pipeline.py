@@ -30,10 +30,10 @@ def _seed_pov_script(tmp_path: Path) -> int:
                             appearance="dark wavy hair, brown skin",
                             clothing="oversized grey hoodie")
     scenes = [
-        _pov_scene("hook", 3, "It's 3 AM and I can't stop looking at your name on my phone."),
-        _pov_scene("tension", 10, "My chest literally hurts. Like physically. I can't eat. I can't sleep."),
-        _pov_scene("revelation", 10, "I looked it up. It's the same part of your brain as cocaine withdrawal."),
-        _pov_scene("resolution", 7, "It's not that I'm weak. It's just chemistry. And chemistry changes."),
+        _pov_scene("hook", 3, "It's 3 AM again."),
+        _pov_scene("tension", 10, "My chest hurts. I can't eat. I can't sleep."),
+        _pov_scene("revelation", 10, "Same brain pattern as withdrawal. That's what this is."),
+        _pov_scene("resolution", 7, "It's just chemistry. Chemistry changes."),
     ]
     script = db.add_script(
         conn, topic="Heartbreak POV", hook="It's 3 AM.",
@@ -135,8 +135,8 @@ def test_pov_reference_prompt_default_emotion() -> None:
     char = Character(id=1, name="Maya", age="late 20s", gender="female",
                      appearance="dark hair", clothing="hoodie", created_at=None)
     prompt = build_pov_reference_prompt(char)
-    # No hook_emotion provided — should use default exhausted expression
-    assert "exhausted" in prompt.lower()
+    # No hook_emotion provided — should use empowering tone default
+    assert "confident" in prompt.lower()
     assert "Soft warm lighting" in prompt
 
 

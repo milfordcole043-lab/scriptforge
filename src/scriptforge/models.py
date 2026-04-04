@@ -30,7 +30,7 @@ class Character:
     clothing: str
     created_at: datetime | None = None
     reference_image_path: str | None = None
-    wardrobe: list[str] = field(default_factory=list)
+    wardrobe: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -68,6 +68,8 @@ class Script:
     character_id: int | None = None
     template_id: int | None = None
     mode: str = "narrator"
+    tone: str = "empowering"
+    outfit: str | None = None
     tags: list[str] = field(default_factory=list)
 
     @property
@@ -207,9 +209,16 @@ class StoryTemplate:
     created_at: datetime | None = None
 
 
+VALID_TONES = {"empowering", "vulnerable", "curious", "intense"}
+BLOCKED_EMPOWERING_EMOTIONS = {"desperate", "devastated", "hopeless", "broken", "damaged"}
+WPM_DEFAULT = 130
+
+
 def validate_script(scenes: list[Scene], full_script: str,
                     template: StoryTemplate | None = None,
-                    max_scene_duration: int | None = None) -> list[str]:
+                    max_scene_duration: int | None = None,
+                    tone: str | None = None,
+                    wpm: int = WPM_DEFAULT) -> list[str]:
     """Validate a script against narrative arc rules. Returns list of errors."""
     errors: list[str] = []
 
@@ -225,6 +234,27 @@ def validate_script(scenes: list[Scene], full_script: str,
         for i, s in enumerate(scenes):
             if s.duration_seconds > max_scene_duration:
                 errors.append(f"Scene {i + 1} ({s.beat}) is {s.duration_seconds}s, max is {max_scene_duration}s")
+
+    # Check per-scene word count fits duration (prevents voiceover bloat)
+    for i, s in enumerate(scenes):
+        text = s.dialogue if s.dialogue else s.voiceover
+        if text:
+            words = len(text.split())
+            max_words = int(s.duration_seconds * wpm / 60 * 1.3)  # 30% tolerance
+            if words > max_words:
+                errors.append(
+                    f"Scene {i + 1} ({s.beat}) has {words} words but {s.duration_seconds}s "
+                    f"only fits ~{max_words} words at {wpm} WPM")
+
+    # Check tone-emotion alignment (empowering rejects desperate/hopeless)
+    if tone == "empowering":
+        for i, s in enumerate(scenes):
+            emotion_lower = (s.character_emotion or "").lower()
+            for blocked in BLOCKED_EMPOWERING_EMOTIONS:
+                if blocked in emotion_lower:
+                    errors.append(
+                        f"Scene {i + 1} ({s.beat}) emotion '{s.character_emotion}' "
+                        f"conflicts with empowering tone (contains '{blocked}')")
 
     # Check duration bounds
     total = sum(s.duration_seconds for s in scenes)

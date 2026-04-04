@@ -131,10 +131,23 @@ def generate_pov_voiceover(script: Script, output_dir: Path,
     with open(voiceover_path, "wb") as f:
         f.write(audio_data)
 
+    # Speed-adjust if voiceover is significantly longer than target duration
+    from pydub import AudioSegment
+    audio = AudioSegment.from_file(str(voiceover_path))
+    actual_s = len(audio) / 1000.0
+    target_s = float(script.total_duration)
+    if actual_s > target_s * 1.1:
+        speed_factor = actual_s / target_s
+        console.print(f"    Adjusting speed: {actual_s:.1f}s → {target_s:.0f}s ({speed_factor:.2f}x)")
+        audio = audio.speedup(playback_speed=speed_factor, chunk_size=150, crossfade=25)
+        audio.export(str(voiceover_path), format="mp3")
+
     console.print(f"    Saved: {voiceover_path.name}")
 
     if conn:
-        dur_s = script.total_duration
+        # Log actual duration, not script target
+        final_audio = AudioSegment.from_file(str(voiceover_path))
+        dur_s = len(final_audio) / 1000.0
         db.log_render_step(conn, script.id, "pov_voiceover", "elevenlabs-v3", dur_s, dur_s * COST_ELEVENLABS)
 
     return voiceover_path
@@ -227,6 +240,7 @@ def generate_pov_reference(character: Character, lighting: str, hook_emotion: st
 
 
 MAX_LIPSYNC_CHUNK_SECONDS = 7.0
+MAX_TOTAL_SUBCLIPS = 6
 
 
 def _split_long_chunk(chunk_path: Path, max_seconds: float,
@@ -265,12 +279,17 @@ def generate_lipsync_clips(script: Script, character: Character,
     os.environ["FAL_KEY"] = FAL_KEY
     clips: list[Path] = []
     current_image = ref_image
+    total_subclips = 0
 
     for i, (scene, chunk) in enumerate(zip(script.scenes, chunks)):
-        # Split long audio chunks into sub-chunks for better lip-sync quality
-        sub_chunks = _split_long_chunk(chunk, MAX_LIPSYNC_CHUNK_SECONDS,
-                                       output_dir, i + 1)
+        # Split long audio chunks, but respect total sub-clip cap
+        remaining_budget = max(1, MAX_TOTAL_SUBCLIPS - total_subclips)
+        chunk_max = MAX_LIPSYNC_CHUNK_SECONDS
+        if remaining_budget <= 1:
+            chunk_max = 999.0  # No splitting — budget exhausted
+        sub_chunks = _split_long_chunk(chunk, chunk_max, output_dir, i + 1)
         n_sub = len(sub_chunks)
+        total_subclips += n_sub
 
         for j, sub_chunk in enumerate(sub_chunks):
             if n_sub == 1:
@@ -464,10 +483,15 @@ def _show_pov_dry_run(script: Script, character: Character, output_dir: Path) ->
     console.print(f"  Total duration: {total_duration}s")
 
     ref_cost = COST_FLUX_PRO if not (output_dir / "images" / "pov_reference.png").exists() else 0
-    fabric_cost = total_duration * COST_FABRIC
-    vo_cost = total_duration * COST_ELEVENLABS
+    # Estimate based on word count → expected audio duration (more accurate than scene durations)
+    from scriptforge.config import WPM
+    expected_audio_s = max(total_duration, script.word_count / WPM * 60)
+    fabric_cost = expected_audio_s * COST_FABRIC
+    vo_cost = expected_audio_s * COST_ELEVENLABS
     total_cost = ref_cost + fabric_cost + vo_cost
-    console.print(f"  [bold]Estimated cost: ~${total_cost:.2f}[/bold]")
+    n_subclips = sum(max(1, math.ceil(s.duration_seconds * (expected_audio_s / total_duration) / MAX_LIPSYNC_CHUNK_SECONDS))
+                     for s in script.scenes) if total_duration > 0 else len(script.scenes)
+    console.print(f"  [bold]Estimated cost: ~${total_cost:.2f}[/bold] ({n_subclips} clips)")
     console.print(f"    Reference: ${ref_cost:.2f} | Clips: ${fabric_cost:.2f} | Voiceover: ${vo_cost:.2f}")
     console.print()
 

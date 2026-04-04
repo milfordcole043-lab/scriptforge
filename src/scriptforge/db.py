@@ -375,6 +375,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE scripts ADD COLUMN mode TEXT DEFAULT 'narrator'")
     if "template_id" not in columns:
         conn.execute("ALTER TABLE scripts ADD COLUMN template_id INTEGER")
+    if "tone" not in columns:
+        conn.execute("ALTER TABLE scripts ADD COLUMN tone TEXT DEFAULT 'empowering'")
+    if "outfit" not in columns:
+        conn.execute("ALTER TABLE scripts ADD COLUMN outfit TEXT")
 
     cp_cols = {row[1] for row in conn.execute("PRAGMA table_info(character_profiles)").fetchall()}
     if "wardrobe" not in cp_cols:
@@ -442,12 +446,14 @@ def add_script(
     mode: str = "narrator",
     tags: list[str] | None = None,
     template_id: int | None = None,
+    tone: str = "empowering",
+    outfit: str | None = None,
 ) -> Script:
     # Fetch template for validation if provided
     template = get_template(conn, template_id) if template_id else None
     max_scene_dur = 10 if mode == "pov" else None
     errors = validate_script(scenes, full_script, template=template,
-                              max_scene_duration=max_scene_dur)
+                              max_scene_duration=max_scene_dur, tone=tone)
     if errors:
         raise ValueError(f"Script validation failed: {'; '.join(errors)}")
     now = datetime.now().isoformat()
@@ -459,11 +465,11 @@ def add_script(
     cur = conn.execute(
         "INSERT INTO scripts (topic, angle, style, duration_target, hook, "
         "scenes, full_script, word_count, version, parent_id, character_id, "
-        "template_id, mode, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "template_id, mode, tone, outfit, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (topic, angle, style, duration_target, hook,
          scenes_json, full_script, word_count, version, parent_id, character_id,
-         template_id, mode, now),
+         template_id, mode, tone, outfit, now),
     )
     script_id = cur.lastrowid
     tag_list = tags or []
@@ -479,7 +485,8 @@ def add_script(
         id=script_id, topic=topic, hook=hook, scenes=scenes,
         full_script=full_script, style=style, duration_target=duration_target,
         angle=angle, word_count=word_count, character_id=character_id,
-        template_id=template_id, mode=mode, version=version, parent_id=parent_id,
+        template_id=template_id, mode=mode, tone=tone, outfit=outfit,
+        version=version, parent_id=parent_id,
         created_at=datetime.fromisoformat(now), tags=tag_list,
     )
 
@@ -487,7 +494,7 @@ def add_script(
 def get_script(conn: sqlite3.Connection, script_id: int) -> Script | None:
     row = conn.execute(
         "SELECT id, topic, angle, style, duration_target, hook, scenes, "
-        "full_script, word_count, rating, feedback, version, parent_id, character_id, template_id, mode, created_at "
+        "full_script, word_count, rating, feedback, version, parent_id, character_id, template_id, mode, tone, outfit, created_at "
         "FROM scripts WHERE id = ?",
         (script_id,),
     ).fetchone()
@@ -501,7 +508,7 @@ def get_script(conn: sqlite3.Connection, script_id: int) -> Script | None:
 def list_scripts(conn: sqlite3.Connection) -> list[Script]:
     rows = conn.execute(
         "SELECT id, topic, angle, style, duration_target, hook, scenes, "
-        "full_script, word_count, rating, feedback, version, parent_id, character_id, template_id, mode, created_at "
+        "full_script, word_count, rating, feedback, version, parent_id, character_id, template_id, mode, tone, outfit, created_at "
         "FROM scripts ORDER BY created_at DESC",
     ).fetchall()
     scripts = [_row_to_script(r) for r in rows]
@@ -531,7 +538,7 @@ def search_scripts(conn: sqlite3.Connection, query: str) -> list[Script]:
     pattern = f"%{query}%"
     rows = conn.execute(
         "SELECT id, topic, angle, style, duration_target, hook, scenes, "
-        "full_script, word_count, rating, feedback, version, parent_id, character_id, template_id, mode, created_at "
+        "full_script, word_count, rating, feedback, version, parent_id, character_id, template_id, mode, tone, outfit, created_at "
         "FROM scripts WHERE topic LIKE ? OR full_script LIKE ? OR hook LIKE ? "
         "ORDER BY created_at DESC",
         (pattern, pattern, pattern),
@@ -642,12 +649,19 @@ def add_character(conn: sqlite3.Connection, name: str, age: str, gender: str,
                      created_at=datetime.fromisoformat(now))
 
 
-def _parse_wardrobe(raw: str | None) -> list[str]:
+def _parse_wardrobe(raw: str | None) -> list[dict]:
+    """Parse wardrobe JSON. Handles both old list[str] and new list[dict] formats."""
     import json as _json
     if not raw:
         return []
     try:
-        return _json.loads(raw)
+        data = _json.loads(raw)
+        if not data:
+            return []
+        # Backward compat: convert list[str] to list[dict]
+        if isinstance(data[0], str):
+            return [{"outfit": o, "tones": []} for o in data]
+        return data
     except (ValueError, TypeError):
         return []
 
@@ -1142,5 +1156,7 @@ def _row_to_script(row: tuple) -> Script:
         character_id=row[13],
         template_id=row[14],
         mode=row[15] or "narrator",
-        created_at=datetime.fromisoformat(row[16]),
+        tone=row[16] or "empowering",
+        outfit=row[17],
+        created_at=datetime.fromisoformat(row[18]),
     )
