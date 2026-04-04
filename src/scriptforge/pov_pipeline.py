@@ -379,12 +379,13 @@ def assemble_pov(clips: list[Path], voiceover: Path, subtitles: Path,
         raise RuntimeError("FFmpeg concat failed")
 
     # Overlay voiceover + burn subtitles
-    sub_path_str = str(subtitles.resolve()).replace("\\", "/").replace(":", "\\:")
+    # Use 'subtitles' filter with forward-slash path (more robust than 'ass' filter on Windows)
+    sub_path_escaped = str(subtitles.resolve()).replace("\\", "/").replace(":", "\\\\:")
     cmd_final = [
         "ffmpeg", "-y",
         "-i", str(concat_video),
         "-i", str(voiceover),
-        "-vf", f"ass={sub_path_str}",
+        "-vf", f"subtitles={sub_path_escaped}",
         "-c:v", "libx264", "-c:a", "aac", "-shortest",
         str(final_path),
     ]

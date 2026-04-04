@@ -48,12 +48,26 @@ def extract_scene_frames(script: Script, output_dir: Path) -> list[Path]:
     return frames
 
 
-def _encode_image(path: Path) -> str | None:
-    """Base64 encode an image file."""
-    if not path.exists():
-        return None
+def _detect_media_type(path: Path) -> str:
+    """Detect image media type from file header bytes."""
     with open(path, "rb") as f:
-        return base64.standard_b64encode(f.read()).decode("utf-8")
+        header = f.read(8)
+    if header[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if header[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if header[:4] == b"RIFF" and header[8:12] == b"WEBP" if len(header) >= 12 else False:
+        return "image/webp"
+    return "image/png"  # fallback
+
+
+def _encode_image(path: Path) -> tuple[str, str] | tuple[None, str]:
+    """Base64 encode an image file. Returns (base64_data, media_type)."""
+    if not path.exists():
+        return None, "image/png"
+    media_type = _detect_media_type(path)
+    with open(path, "rb") as f:
+        return base64.standard_b64encode(f.read()).decode("utf-8"), media_type
 
 
 def _review_frame_with_claude(frame_path: Path, ref_path: Path | None,
@@ -63,7 +77,7 @@ def _review_frame_with_claude(frame_path: Path, ref_path: Path | None,
     """Send a frame to Claude's vision API for quality analysis."""
     import anthropic
 
-    frame_b64 = _encode_image(frame_path)
+    frame_b64, frame_media = _encode_image(frame_path)
     if not frame_b64:
         return SceneReview(scene_index=scene_index, score=5, issues=["Could not load frame"],
                            suggestions=["Re-render this scene"])
@@ -72,7 +86,7 @@ def _review_frame_with_claude(frame_path: Path, ref_path: Path | None,
 
     # Add reference portrait if available
     if ref_path and ref_path.exists():
-        ref_b64 = _encode_image(ref_path)
+        ref_b64, ref_media = _encode_image(ref_path)
         if ref_b64:
             messages_content.append({
                 "type": "text",
@@ -80,7 +94,7 @@ def _review_frame_with_claude(frame_path: Path, ref_path: Path | None,
             })
             messages_content.append({
                 "type": "image",
-                "source": {"type": "base64", "media_type": "image/png", "data": ref_b64}
+                "source": {"type": "base64", "media_type": ref_media, "data": ref_b64}
             })
 
     messages_content.append({
@@ -89,7 +103,7 @@ def _review_frame_with_claude(frame_path: Path, ref_path: Path | None,
     })
     messages_content.append({
         "type": "image",
-        "source": {"type": "base64", "media_type": "image/png", "data": frame_b64}
+        "source": {"type": "base64", "media_type": frame_media, "data": frame_b64}
     })
 
     prompt = (
