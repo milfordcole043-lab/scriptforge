@@ -10,7 +10,7 @@ from scriptforge.models import Character, Scene, Script, StoryTemplate
 _BEAT_RULES: dict[str, set[str]] = {
     "hook": {"hook", "caption", "visual", "prompt"},
     "tension": {"emotion", "pacing", "character", "location"},
-    "revelation": {"structure", "storytelling", "prompt"},
+    "revelation": {"structure", "storytelling", "prompt", "emotion"},
     "resolution": {"voice", "structure", "pacing"},
 }
 
@@ -494,9 +494,9 @@ def _build_write_prompt(
         for i, b in enumerate(template.beat_structure, 1):
             dur_min = b["duration_min"]
             dur_max = b["duration_max"]
-            # POV lip-sync constraint: reduce max duration for longer beats
+            # POV lip-sync constraint: reduce max duration, hard cap at 10s
             if mode == "pov" and dur_max > 7:
-                dur_max = max(dur_min, dur_max - 2)
+                dur_max = min(10, max(dur_min, dur_max - 3))
             sections.append(f"{i}. {b['beat'].upper()} ({dur_min}-{dur_max}s) -- {b['description']}")
     else:
         sections.append("\n--- NARRATIVE ARC (4 beats, every script needs all 4) ---")
@@ -606,6 +606,112 @@ def _build_rewrite_prompt(script: Script, feedback_text: str, rules: list, voice
     sections.append("\nAddress the feedback while keeping what worked. Follow the 4-beat arc. Include captions for every scene.")
 
     return "\n".join(sections)
+
+
+# --- Auto-optimization ---
+
+
+def auto_optimize(conn: sqlite3.Connection) -> list[str]:
+    """Run after every feedback-rate. Updates template rates and detects patterns."""
+    import json
+
+    messages: list[str] = []
+
+    # Step 1: Update all template success rates
+    for t in db.get_all_templates(conn):
+        old_rate = t.success_rate
+        new_rate = db.update_template_success_rate(conn, t.id)
+        if new_rate > 0 and abs(new_rate - old_rate) >= 0.01:
+            direction = "↑" if new_rate > old_rate else "↓"
+            messages.append(f"  {t.name}: {old_rate:.1f} → {new_rate:.1f} {direction}")
+
+    # Step 2: Detect patterns from scene feedback (need 5+ scenes)
+    rows = conn.execute(
+        "SELECT sf.scene_index, sf.visual_quality, sf.emotional_impact, sf.pacing, "
+        "sf.lip_sync, s.scenes, s.mode "
+        "FROM scene_feedback sf JOIN scripts s ON sf.script_id = s.id",
+    ).fetchall()
+
+    if len(rows) < 5:
+        return messages
+
+    overall_scores: list[float] = []
+    emotion_scores: dict[str, list[float]] = {}
+    duration_scores: dict[str, list[float]] = {}
+    camera_scores: dict[str, list[float]] = {}
+
+    for r in rows:
+        idx, vis, emo, pace, lip, scenes_json, mode = r
+        scenes = json.loads(scenes_json)
+        if idx < len(scenes):
+            scene = scenes[idx]
+            avg = (vis + emo + pace) / 3.0
+            overall_scores.append(avg)
+
+            # Emotion tracking — extract first clear emotion word
+            emotion_raw = scene.get("character_emotion", "").lower()
+            for keyword in ("curious", "amused", "fascinated", "realization",
+                            "acceptance", "wonder", "shock", "desperate",
+                            "panic", "devastation", "anxiety", "confusion"):
+                if keyword in emotion_raw:
+                    emotion_scores.setdefault(keyword, []).append(avg)
+
+            # Duration buckets
+            dur = scene.get("duration_seconds", 0)
+            bucket = "short" if dur <= 5 else "medium" if dur <= 10 else "long"
+            duration_scores.setdefault(bucket, []).append(avg)
+
+            # Camera
+            camera = scene.get("camera", "").lower()
+            if "static" in camera and "selfie" in camera:
+                camera_scores.setdefault("static selfie", []).append(avg)
+            elif camera:
+                camera_scores.setdefault("other camera", []).append(avg)
+
+    overall_avg = sum(overall_scores) / len(overall_scores) if overall_scores else 3.0
+
+    # Check for auto-rule candidates
+    existing_auto = {r[0] for r in conn.execute(
+        "SELECT rule FROM rulebook WHERE source = 'auto-optimization'"
+    ).fetchall()}
+
+    # Emotion patterns
+    for emotion, scores in emotion_scores.items():
+        if len(scores) >= 3:
+            avg = sum(scores) / len(scores)
+            diff = avg - overall_avg
+            if abs(diff) >= 0.5:
+                direction = "high-performing" if diff > 0 else "underperforming"
+                rule_text = f"Auto-detected: '{emotion}' emotion is {direction} ({avg:.1f}/5 vs {overall_avg:.1f} avg, {len(scores)} samples)"
+                if rule_text not in existing_auto:
+                    db.add_rule(conn, rule=rule_text, category="emotion", source="auto-optimization")
+                    messages.append(f"  New rule: {emotion} emotion {direction} ({avg:.1f}/5)")
+
+    # Duration patterns
+    short_scores = duration_scores.get("short", [])
+    long_scores = duration_scores.get("long", [])
+    if len(short_scores) >= 3 and len(long_scores) >= 3:
+        short_avg = sum(short_scores) / len(short_scores)
+        long_avg = sum(long_scores) / len(long_scores)
+        if short_avg - long_avg >= 0.3:
+            rule_text = f"Auto-detected: short scenes (≤5s) score {short_avg:.1f}/5 vs long scenes (11s+) at {long_avg:.1f}/5. Keep scenes short."
+            if rule_text not in existing_auto:
+                db.add_rule(conn, rule=rule_text, category="pacing", source="auto-optimization")
+                messages.append(f"  New rule: short scenes outperform long by {short_avg - long_avg:.1f}")
+
+    # Camera patterns
+    selfie_scores = camera_scores.get("static selfie", [])
+    other_scores = camera_scores.get("other camera", [])
+    if len(selfie_scores) >= 3 and len(other_scores) >= 3:
+        selfie_avg = sum(selfie_scores) / len(selfie_scores)
+        other_avg = sum(other_scores) / len(other_scores)
+        if selfie_avg - other_avg >= 0.5:
+            rule_text = f"Auto-detected: static selfie camera scores {selfie_avg:.1f}/5 vs other cameras at {other_avg:.1f}/5. Prefer static selfie for POV."
+            if rule_text not in existing_auto:
+                db.add_rule(conn, rule=rule_text, category="camera", source="auto-optimization")
+                messages.append(f"  New rule: static selfie outperforms other cameras by {selfie_avg - other_avg:.1f}")
+
+    return messages
 
 
 # --- Topic generation ---

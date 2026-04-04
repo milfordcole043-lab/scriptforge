@@ -10,8 +10,8 @@ from rich.table import Table
 
 from scriptforge import db
 from scriptforge.engine import (
-    analyze_feedback_patterns, build_rewrite_context, build_write_context,
-    generate_topics,
+    analyze_feedback_patterns, auto_optimize, build_rewrite_context,
+    build_write_context, generate_topics,
 )
 from scriptforge.pipeline import render_script
 
@@ -251,7 +251,14 @@ def feedback_rate(ctx: click.Context, script_id: int) -> None:
 
     color = "green" if auto_rating == "hit" else "yellow" if auto_rating == "rewrite" else "red"
     console.print(f"\n[{color}]Overall: {overall:.1f}/5 ({auto_rating})[/{color}]")
-    console.print(f"[green]Scene feedback saved for all {len(script.scenes)} scenes.[/green]\n")
+    console.print(f"[green]Scene feedback saved for all {len(script.scenes)} scenes.[/green]")
+
+    # Auto-optimization: update template rates, detect patterns, generate rules
+    learned = auto_optimize(conn)
+    if learned:
+        console.print(f"\n[bold cyan]System learned:[/bold cyan]")
+        for msg in learned:
+            console.print(msg)
 
 
 @cli.command()

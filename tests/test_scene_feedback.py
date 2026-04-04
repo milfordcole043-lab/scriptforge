@@ -56,7 +56,7 @@ def test_multiple_scene_feedback(conn: sqlite3.Connection) -> None:
 
 
 def test_scene_feedback_with_lip_sync(conn: sqlite3.Connection) -> None:
-    scenes = _valid_scenes()
+    scenes = [_scene("hook", 3), _scene("tension", 10), _scene("revelation", 10), _scene("resolution", 7)]
     script = db.add_script(conn, topic="POV", hook="H", scenes=scenes, full_script="T", mode="pov")
     db.save_scene_feedback(conn, script.id, 0, visual_quality=4, emotional_impact=5,
                             pacing=3, lip_sync=4, notes="Good sync")

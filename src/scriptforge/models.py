@@ -208,7 +208,8 @@ class StoryTemplate:
 
 
 def validate_script(scenes: list[Scene], full_script: str,
-                    template: StoryTemplate | None = None) -> list[str]:
+                    template: StoryTemplate | None = None,
+                    max_scene_duration: int | None = None) -> list[str]:
     """Validate a script against narrative arc rules. Returns list of errors."""
     errors: list[str] = []
 
@@ -218,6 +219,12 @@ def validate_script(scenes: list[Scene], full_script: str,
     missing = expected_beats - beats
     if missing:
         errors.append(f"Missing beats: {', '.join(sorted(missing))}")
+
+    # Check per-scene duration cap (POV mode)
+    if max_scene_duration:
+        for i, s in enumerate(scenes):
+            if s.duration_seconds > max_scene_duration:
+                errors.append(f"Scene {i + 1} ({s.beat}) is {s.duration_seconds}s, max is {max_scene_duration}s")
 
     # Check duration bounds
     total = sum(s.duration_seconds for s in scenes)

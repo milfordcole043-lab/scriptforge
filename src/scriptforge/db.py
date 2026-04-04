@@ -251,6 +251,10 @@ _DEFAULT_RULES = [
     ("Reframe every psychological fact as a superpower or hidden ability, not a dysfunction.", "storytelling", "tone system"),
     ("The character discovers something amazing about themselves, not something broken.", "character", "tone system"),
     ("Use words like: incredible, powerful, designed to, built for, capable of -- not: broken, damaged, withdrawal, dysfunction.", "voice", "tone system"),
+    # Data-driven optimization rules
+    ("POV emotions must be simple and clear -- one feeling, not contradictions. Lip-sync renders curiosity, amusement, fascination, and quiet realization well. It renders shock, desperation, and masked emotions poorly.", "pov", "data-optimization"),
+    ("Revelation beats should use realization or fascination emotions, not shock or devastation. Data shows quiet realization scores 3.7/5 vs shock at 3.3/5.", "emotion", "data-optimization"),
+    ("The revelation/reveal beat should be the SHORTEST content beat, not the longest. Hit the twist fast -- don't explain it. Let the viewer's brain do the work.", "structure", "data-optimization"),
 ]
 
 _DEFAULT_VOICE_PROFILE = [
@@ -271,7 +275,7 @@ _DEFAULT_STORY_TEMPLATES = [
         "beat_structure": [
             {"beat": "hook", "description": "personal moment", "duration_min": 2, "duration_max": 3, "rule_categories": ["hook", "caption", "visual", "prompt"]},
             {"beat": "tension", "description": "deepen the feeling", "duration_min": 8, "duration_max": 12, "rule_categories": ["emotion", "pacing", "character", "location"]},
-            {"beat": "revelation", "description": "science/insight as a twist that reframes everything", "duration_min": 10, "duration_max": 15, "rule_categories": ["structure", "storytelling", "prompt"]},
+            {"beat": "revelation", "description": "science/insight as a twist that reframes everything — hit it fast, don't over-explain", "duration_min": 8, "duration_max": 12, "rule_categories": ["structure", "storytelling", "prompt", "emotion"]},
             {"beat": "resolution", "description": "reframe, not advice — short and powerful", "duration_min": 5, "duration_max": 7, "rule_categories": ["voice", "structure", "pacing"]},
         ],
         "matching_keywords": ["heartbreak", "anxiety", "falling in love", "jealousy", "loneliness", "grief", "rejection"],
@@ -283,7 +287,7 @@ _DEFAULT_STORY_TEMPLATES = [
         "beat_structure": [
             {"beat": "question", "description": "unanswerable hook that grabs curiosity", "duration_min": 2, "duration_max": 3, "rule_categories": ["hook", "caption", "visual", "prompt"]},
             {"beat": "clues", "description": "build evidence, deepen the mystery", "duration_min": 8, "duration_max": 10, "rule_categories": ["emotion", "pacing", "character", "location"]},
-            {"beat": "reveal", "description": "the surprising answer", "duration_min": 8, "duration_max": 10, "rule_categories": ["structure", "storytelling", "prompt"]},
+            {"beat": "reveal", "description": "the surprising answer — short and punchy, don't over-explain", "duration_min": 5, "duration_max": 8, "rule_categories": ["structure", "storytelling", "prompt", "emotion"]},
             {"beat": "reframe", "description": "new understanding that changes perspective", "duration_min": 5, "duration_max": 5, "rule_categories": ["voice", "structure", "pacing"]},
         ],
         "matching_keywords": ["why", "always", "never", "can't stop", "keep doing", "pattern", "repeat", "habit"],
@@ -327,7 +331,7 @@ _DEFAULT_STORY_TEMPLATES = [
     },
     {
         "name": "THE ZOOM OUT",
-        "description": "Start with one tiny detail, keep zooming out until the big picture is revealed. Best for mind-blowing body facts.",
+        "description": "Start with one tiny detail, keep zooming out until the big picture is revealed. Best for mind-blowing body facts. In POV mode: zoom is conceptual (start with face extreme close-up, reveal context through dialogue), not visual camera zoom.",
         "beat_structure": [
             {"beat": "micro", "description": "tiny detail — one sensation or body part", "duration_min": 2, "duration_max": 3, "rule_categories": ["hook", "caption", "visual", "prompt"]},
             {"beat": "expand", "description": "what it connects to — the next layer", "duration_min": 7, "duration_max": 8, "rule_categories": ["emotion", "pacing", "character", "location"]},
@@ -441,7 +445,9 @@ def add_script(
 ) -> Script:
     # Fetch template for validation if provided
     template = get_template(conn, template_id) if template_id else None
-    errors = validate_script(scenes, full_script, template=template)
+    max_scene_dur = 10 if mode == "pov" else None
+    errors = validate_script(scenes, full_script, template=template,
+                              max_scene_duration=max_scene_dur)
     if errors:
         raise ValueError(f"Script validation failed: {'; '.join(errors)}")
     now = datetime.now().isoformat()

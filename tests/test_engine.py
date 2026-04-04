@@ -4,9 +4,9 @@ import sqlite3
 
 from scriptforge import db
 from scriptforge.engine import (
-    build_write_context, build_rewrite_context, analyze_feedback_patterns,
-    build_video_prompt, _build_temporal_motion, _interpolate_lighting,
-    _filter_voice_profile, _select_rules_for_beat,
+    auto_optimize, build_write_context, build_rewrite_context,
+    analyze_feedback_patterns, build_video_prompt, _build_temporal_motion,
+    _interpolate_lighting, _filter_voice_profile, _select_rules_for_beat,
 )
 from scriptforge.models import Character, Scene, VoiceProfile
 
@@ -279,23 +279,22 @@ def test_analyze_feedback_patterns(conn: sqlite3.Connection) -> None:
 def test_pov_mode_tighter_revelation_duration(conn: sqlite3.Connection) -> None:
     db.seed_defaults(conn)
     ctx = build_write_context(conn, topic="Test", style="cinematic", duration_target=45, mode="pov")
-    # POV mode reduces max duration by 2s for beats > 7s (THE MIRROR: revelation 10-15 -> 10-13)
-    assert "10-13s" in ctx["prompt"]
-    assert "10-15s" not in ctx["prompt"]
+    # POV: MIRROR revelation 8-12 -> min(10, max(8, 12-3)) = 8-9s
+    assert "8-9s" in ctx["prompt"]
+    assert "8-12s" not in ctx["prompt"]
 
 
 def test_narrator_mode_keeps_original_durations(conn: sqlite3.Connection) -> None:
     db.seed_defaults(conn)
     ctx = build_write_context(conn, topic="Test", style="cinematic", duration_target=45, mode="narrator")
-    assert "10-15s" in ctx["prompt"]
+    assert "8-12s" in ctx["prompt"]
 
 
 def test_pov_mode_tighter_tension_duration(conn: sqlite3.Connection) -> None:
     db.seed_defaults(conn)
     ctx = build_write_context(conn, topic="Test", style="cinematic", duration_target=45, mode="pov")
-    # POV mode reduces max duration by 2s for beats > 7s (THE MIRROR: tension 8-12 -> 8-10)
-    assert "8-10s" in ctx["prompt"]
-    assert "8-12s" not in ctx["prompt"]
+    # POV: MIRROR tension 8-12 -> min(10, max(8, 12-3)) = 8-9s
+    assert "8-9s" in ctx["prompt"]
 
 
 def test_analyze_feedback_patterns_empty(conn: sqlite3.Connection) -> None:
@@ -320,3 +319,27 @@ def test_write_context_variety_empty_db(conn: sqlite3.Connection) -> None:
     ctx = build_write_context(conn, topic="Fresh", style="cinematic", duration_target=45)
     # No scripts yet — AVOID REPEATING section should not appear
     assert "AVOID REPEATING" not in ctx["prompt"]
+
+
+# --- Auto-optimization ---
+
+
+def test_auto_optimize_updates_template_rates(conn: sqlite3.Connection) -> None:
+    db.seed_defaults(conn)
+    mystery = db.get_template_by_name(conn, "mystery")
+    scenes = [_scene("question", 3), _scene("clues", 10), _scene("reveal", 7), _scene("reframe", 5)]
+    s = db.add_script(conn, topic="test", hook="h", scenes=scenes,
+                      full_script="test script.", template_id=mystery.id)
+    db.save_scene_feedback(conn, s.id, 0, visual_quality=4, emotional_impact=5, pacing=4)
+    db.save_scene_feedback(conn, s.id, 1, visual_quality=4, emotional_impact=4, pacing=4)
+    messages = auto_optimize(conn)
+    updated = db.get_template(conn, mystery.id)
+    assert updated.success_rate > 0
+    assert any("MYSTERY" in m for m in messages)
+
+
+def test_auto_optimize_no_crash_insufficient_data(conn: sqlite3.Connection) -> None:
+    db.seed_defaults(conn)
+    # No feedback at all — should return empty or just template updates
+    messages = auto_optimize(conn)
+    assert isinstance(messages, list)

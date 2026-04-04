@@ -223,7 +223,7 @@ def test_pov_rules_seeded(conn: sqlite3.Connection) -> None:
     db.seed_defaults(conn)
     rules = db.get_active_rules(conn)
     pov_rules = [r for r in rules if r.category == "pov"]
-    assert len(pov_rules) == 6
+    assert len(pov_rules) == 7
 
 
 def test_pov_voice_profile_seeded(conn: sqlite3.Connection) -> None:
