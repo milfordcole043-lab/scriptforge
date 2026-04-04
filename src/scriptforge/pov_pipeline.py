@@ -302,8 +302,11 @@ def extract_last_frame(clip_path: Path, output_dir: Path, scene_num: int) -> Pat
     return frame_path
 
 
+SUBTITLE_OFFSET: float = 0.3  # seconds — shift subtitles later to sync with speech
+
+
 def generate_subtitles(voiceover: Path, output_dir: Path) -> Path:
-    """Generate word-level subtitles using faster-whisper."""
+    """Generate word-level subtitles using faster-whisper with sync offset."""
     ass_path = output_dir / "subtitles.ass"
 
     # Resume: skip if exists
@@ -336,8 +339,8 @@ def generate_subtitles(voiceover: Path, output_dir: Path) -> Path:
     for segment in segments:
         if segment.words:
             for word in segment.words:
-                start = _format_ass_time(word.start)
-                end = _format_ass_time(word.end)
+                start = _format_ass_time(word.start + SUBTITLE_OFFSET)
+                end = _format_ass_time(word.end + SUBTITLE_OFFSET)
                 text = word.word.strip().upper()
                 if text:
                     lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}")
