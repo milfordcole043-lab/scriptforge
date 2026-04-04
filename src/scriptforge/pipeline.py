@@ -10,7 +10,9 @@ from rich.table import Table
 
 from scriptforge import db
 from scriptforge.config import (
-    ELEVENLABS_API_KEY, FAL_KEY, OUTPUT_DIR,
+    COST_ELEVENLABS, COST_FABRIC, COST_FLUX_PRO, COST_KLING_V3,
+    ELEVENLABS_API_KEY, FAL_KEY, KLING_NEGATIVE, MODEL_FLUX_PRO, MODEL_KLING_V3,
+    OUTPUT_DIR, VOICE_NARRATOR, WPM,
     escape_ffmpeg_text, retry_api_call, safe_download,
 )
 from scriptforge.engine import build_video_prompt
@@ -18,14 +20,6 @@ from scriptforge.models import Character, Script
 from scriptforge.researcher import grade_prompt
 
 console = Console()
-
-KLING_NEGATIVE = "blur, flickering, morphing faces, distorted hands, text, watermark, low quality, jittery motion"
-
-# Cost per second estimates
-COST_FLUX_PRO = 0.04  # per image
-COST_KLING_V3 = 0.112  # per second, no audio
-COST_ELEVENLABS = 0.03  # per second estimate
-COST_FABRIC = 0.15  # per second at 720p
 
 
 def render_script(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = False) -> Path | None:
@@ -118,7 +112,7 @@ def generate_character_portrait(character: Character, output_dir: Path,
     )
 
     result = retry_api_call(
-        fal_client.subscribe, "fal-ai/flux-pro/v1.1",
+        fal_client.subscribe, MODEL_FLUX_PRO,
         arguments={"prompt": prompt, "image_size": "portrait_16_9", "num_images": 1},
         label="Flux Pro (character portrait)",
     )
@@ -154,7 +148,7 @@ def generate_images(script: Script, character: Character, output_dir: Path,
                                      scenes=script.scenes, scene_index=i)
 
         result = retry_api_call(
-            fal_client.subscribe, "fal-ai/flux-pro/v1.1",
+            fal_client.subscribe, MODEL_FLUX_PRO,
             arguments={"prompt": prompt, "image_size": "portrait_16_9", "num_images": 1},
             label=f"Flux Pro (scene {i + 1})",
         )
@@ -207,7 +201,7 @@ def generate_clips(script: Script, character: Character, images: list[Path],
         )
 
         result = retry_api_call(
-            fal_client.subscribe, "fal-ai/kling-video/v3/pro/image-to-video",
+            fal_client.subscribe, MODEL_KLING_V3,
             arguments={
                 "start_image_url": image_url,
                 "prompt": video_prompt,
@@ -283,7 +277,7 @@ def generate_voiceover(script: Script, output_dir: Path,
     def _generate() -> bytes:
         gen = client.text_to_speech.convert(
             text=script.full_script,
-            voice_id="nPczCjzI2devNBz1zQrb",  # Brian
+            voice_id=VOICE_NARRATOR,
             model_id="eleven_v3",
             output_format="mp3_44100_128",
         )

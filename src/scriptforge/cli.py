@@ -45,7 +45,8 @@ def write(ctx: click.Context, topic: str, style: str, duration: int, no_generate
     """Write a new script. Assembles context from rulebook, hooks, and feedback."""
     conn = _get_conn(ctx)
     context = build_write_context(conn, topic=topic, style=style, duration_target=duration)
-    wpm = 130
+    from scriptforge.config import WPM
+    wpm = WPM
     word_target = duration * wpm // 60
 
     console.print(Panel(f"[bold]Topic:[/bold] {topic}\n[bold]Style:[/bold] {style}\n"
@@ -312,7 +313,10 @@ def export(ctx: click.Context, script_id: int, output: str | None) -> None:
     for i, s in enumerate(script.scenes, 1):
         content += f"\n[Scene {i} - {s.beat} - {s.duration_seconds}s]\n"
         content += f"CAPTION: {s.caption}\n"
-        content += f"VO: {s.voiceover}\n"
+        if s.dialogue:
+            content += f"DIALOGUE: {s.dialogue}\n"
+        if s.voiceover:
+            content += f"VO: {s.voiceover}\n"
         content += f"ACTION: {s.character_action}\n"
         content += f"LOCATION: {s.location}\n"
         content += f"LIGHTING: {s.lighting}\n"

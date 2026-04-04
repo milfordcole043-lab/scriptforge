@@ -12,9 +12,31 @@ from rich.console import Console
 _ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
 load_dotenv(_ENV_PATH)
 
+# --- API keys ---
 ELEVENLABS_API_KEY: str = os.environ.get("ELEVENLABS_API_KEY", "")
 FAL_KEY: str = os.environ.get("FAL_KEY", "")
+
+# --- Paths ---
 OUTPUT_DIR: Path = Path(__file__).resolve().parent.parent.parent / "output"
+
+# --- Voice IDs (ElevenLabs) ---
+VOICE_NARRATOR: str = "nPczCjzI2devNBz1zQrb"  # Brian — warm, natural
+VOICE_POV: str = "pFZP5JQG7iQjIQuC4Bku"  # Lily — young female
+
+# --- Model IDs (fal.ai) ---
+MODEL_FLUX_PRO: str = "fal-ai/flux-pro/v1.1"
+MODEL_KLING_V3: str = "fal-ai/kling-video/v3/pro/image-to-video"
+MODEL_FABRIC: str = "veed/fabric-1.0"
+
+# --- Cost estimates (USD) ---
+COST_FLUX_PRO: float = 0.04       # per image
+COST_KLING_V3: float = 0.112      # per second, no audio
+COST_ELEVENLABS: float = 0.03     # per second estimate
+COST_FABRIC: float = 0.15         # per second at 720p
+
+# --- Video generation ---
+KLING_NEGATIVE: str = "blur, flickering, morphing faces, distorted hands, text, watermark, low quality, jittery motion"
+WPM: int = 130  # words per minute for voiceover pacing
 
 console = Console()
 
@@ -53,7 +75,7 @@ def safe_download(url: str, dest: str, label: str = "download") -> None:
 def escape_ffmpeg_text(text: str) -> str:
     """Properly escape text for FFmpeg drawtext filter."""
     text = text.replace("\\", "\\\\")
-    text = text.replace("'", "\u2019")  # replace with curly apostrophe
+    text = text.replace("'", "\u2019")
     text = text.replace(":", "\\:")
     text = text.replace("{", "\\{")
     text = text.replace("}", "\\}")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 from scriptforge import db
+from scriptforge.config import WPM
 from scriptforge.models import Character, Scene, Script
 
 # --- Rule categories for contextual selection ---
@@ -27,13 +28,18 @@ def _build_temporal_motion(scene: Scene) -> str:
     parts = motion.split(",") if motion else [action]
     parts = [p.strip() for p in parts if p.strip()]
 
+    if not parts:
+        return motion
+
+    start = parts[0]
+    middle = parts[1] if len(parts) > 1 else f"{start} intensifies"
+    end = parts[-1] if len(parts) > 2 else "settling into stillness"
+
     if scene.duration_seconds >= 10 and len(parts) >= 2:
-        # Long scene: full three-phase temporal flow
-        return f"Initially {parts[0]}. Then {parts[1] if len(parts) > 1 else parts[0] + ' intensifies'}. Finally {parts[-1] + ' settling into stillness' if len(parts) <= 2 else parts[-1]}"
-    elif len(parts) >= 1:
-        # Short scene: two-phase
-        return f"Initially {parts[0]}. Then {parts[-1] + ' comes to rest' if len(parts) > 1 else parts[0] + ' and then stillness'}"
-    return motion
+        return f"Initially {start}. Then {middle}. Finally {end}"
+    else:
+        rest = f"{parts[-1]} comes to rest" if len(parts) > 1 else f"{start}, then stillness"
+        return f"Initially {start}. Then {rest}"
 
 
 # --- Video prompt builders ---
@@ -89,8 +95,11 @@ def build_video_prompt(scene: Scene, character: Character | None = None,
     return ". ".join(sections) + "."
 
 
-def build_pov_video_prompt(scene: Scene, character: Character) -> str:
-    """Build a POV lip-sync video prompt for VEED Fabric."""
+def build_pov_video_prompt(scene: Scene, character: Character,
+                           prev_scene: Scene | None = None,
+                           scenes: list[Scene] | None = None,
+                           scene_index: int = 0) -> str:
+    """Build a POV lip-sync video prompt for VEED Fabric with connectivity."""
     sections = []
 
     if scene.location:
@@ -102,13 +111,23 @@ def build_pov_video_prompt(scene: Scene, character: Character) -> str:
         f"wearing {character.clothing}{emotion_cue}"
     )
 
-    if scene.character_action:
+    # Continuity for scenes 2+
+    if prev_scene and scene_index > 0:
+        sections.append(
+            f"[CONTINUITY] Character was just {prev_scene.character_action}. "
+            f"Now {scene.character_action}"
+        )
+    elif scene.character_action:
         sections.append(f"[ACTION] {scene.character_action}")
 
     sections.append("[SPEECH] Talking directly to camera, clear mouth articulation, natural lip movement")
 
-    if scene.lighting:
-        sections.append(f"[LIGHTING] {scene.lighting}. Consistent lighting throughout")
+    # Light progression
+    lighting = scene.lighting
+    if scenes and len(scenes) > 1 and scene_index > 0:
+        lighting = _interpolate_lighting(scenes, scene_index)
+    if lighting:
+        sections.append(f"[LIGHTING] {lighting}. Consistent lighting throughout")
 
     sections.append("[CAMERA] Phone camera perspective, slightly below eye level, subtle handheld wobble")
     sections.append("[STYLE] Raw, intimate, cinematic")
@@ -290,7 +309,7 @@ def _build_write_prompt(
     mode: str = "narrator",
 ) -> str:
     """Build the full prompt for writing a new script."""
-    wpm = 130
+    wpm = WPM
     word_target = duration_target * wpm // 60
     sections = []
 

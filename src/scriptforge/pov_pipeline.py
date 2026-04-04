@@ -10,16 +10,15 @@ from rich.table import Table
 
 from scriptforge import db
 from scriptforge.config import (
-    ELEVENLABS_API_KEY, FAL_KEY, OUTPUT_DIR,
+    COST_ELEVENLABS, COST_FABRIC, COST_FLUX_PRO,
+    ELEVENLABS_API_KEY, FAL_KEY, MODEL_FABRIC, MODEL_FLUX_PRO,
+    OUTPUT_DIR, VOICE_POV,
     retry_api_call, safe_download,
 )
 from scriptforge.engine import build_pov_reference_prompt, build_pov_video_prompt
 from scriptforge.models import Character, Script
-from scriptforge.pipeline import COST_ELEVENLABS, COST_FABRIC, COST_FLUX_PRO
 
 console = Console()
-
-POV_VOICE_ID = "pFZP5JQG7iQjIQuC4Bku"  # Lily — young female
 
 
 def render_pov(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = False) -> Path | None:
@@ -110,7 +109,7 @@ def generate_pov_voiceover(script: Script, output_dir: Path,
     def _generate() -> bytes:
         gen = client.text_to_speech.convert(
             text=text,
-            voice_id=POV_VOICE_ID,
+            voice_id=VOICE_POV,
             model_id="eleven_v3",
             output_format="mp3_44100_128",
         )
@@ -137,6 +136,8 @@ def split_audio_by_scenes(voiceover: Path, script: Script, output_dir: Path) -> 
     chunks: list[Path] = []
     position_ms = 0
     total_scene_duration = sum(s.duration_seconds for s in script.scenes)
+    if total_scene_duration == 0:
+        raise ValueError("Cannot split audio: total scene duration is 0 seconds")
 
     for i, scene in enumerate(script.scenes):
         chunk_path = output_dir / "chunks" / f"chunk_{i + 1:02d}.mp3"
@@ -182,7 +183,7 @@ def generate_pov_reference(character: Character, lighting: str, output_dir: Path
     prompt = build_pov_reference_prompt(character, lighting)
 
     result = retry_api_call(
-        fal_client.subscribe, "fal-ai/flux-pro/v1.1",
+        fal_client.subscribe, MODEL_FLUX_PRO,
         arguments={"prompt": prompt, "image_size": "portrait_16_9", "num_images": 1},
         label="Flux Pro (POV reference)",
     )
@@ -232,7 +233,7 @@ def generate_lipsync_clips(script: Script, character: Character,
         )
 
         result = retry_api_call(
-            fal_client.subscribe, "veed/fabric-1.0",
+            fal_client.subscribe, MODEL_FABRIC,
             arguments={"image_url": image_url, "audio_url": audio_url, "resolution": "720p"},
             label=f"VEED Fabric (scene {i + 1})",
         )

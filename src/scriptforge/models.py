@@ -21,7 +21,7 @@ class Character:
     gender: str
     appearance: str
     clothing: str
-    created_at: datetime
+    created_at: datetime | None = None
     reference_image_path: str | None = None
 
 
