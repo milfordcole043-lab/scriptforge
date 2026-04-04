@@ -137,8 +137,9 @@ def generate_pov_voiceover(script: Script, output_dir: Path,
     actual_s = len(audio) / 1000.0
     target_s = float(script.total_duration)
     if actual_s > target_s * 1.1:
-        speed_factor = actual_s / target_s
-        console.print(f"    Adjusting speed: {actual_s:.1f}s → {target_s:.0f}s ({speed_factor:.2f}x)")
+        speed_factor = min(1.5, actual_s / target_s)  # Cap at 1.5x to avoid distortion
+        adjusted_s = actual_s / speed_factor
+        console.print(f"    Adjusting speed: {actual_s:.1f}s -> {adjusted_s:.0f}s ({speed_factor:.2f}x)")
         audio = audio.speedup(playback_speed=speed_factor, chunk_size=150, crossfade=25)
         audio.export(str(voiceover_path), format="mp3")
 
