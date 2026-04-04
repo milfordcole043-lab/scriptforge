@@ -31,9 +31,9 @@ def _seed_pov_script(tmp_path: Path) -> int:
                             clothing="oversized grey hoodie")
     scenes = [
         _pov_scene("hook", 3, "It's 3 AM and I can't stop looking at your name on my phone."),
-        _pov_scene("tension", 7, "My chest literally hurts. Like physically. I can't eat. I can't sleep."),
-        _pov_scene("revelation", 7, "I looked it up. It's the same part of your brain as cocaine withdrawal."),
-        _pov_scene("resolution", 5, "It's not that I'm weak. It's just chemistry. And chemistry changes."),
+        _pov_scene("tension", 10, "My chest literally hurts. Like physically. I can't eat. I can't sleep."),
+        _pov_scene("revelation", 10, "I looked it up. It's the same part of your brain as cocaine withdrawal."),
+        _pov_scene("resolution", 7, "It's not that I'm weak. It's just chemistry. And chemistry changes."),
     ]
     script = db.add_script(
         conn, topic="Heartbreak POV", hook="It's 3 AM.",
@@ -47,8 +47,17 @@ def _seed_pov_script(tmp_path: Path) -> int:
 # --- Mode detection ---
 
 
+def _valid_pov_scenes() -> list[Scene]:
+    return [
+        _pov_scene("hook", 3, "It's 3 AM."),
+        _pov_scene("tension", 10, "My chest hurts."),
+        _pov_scene("revelation", 10, "It's cocaine withdrawal."),
+        _pov_scene("resolution", 7, "Chemistry changes."),
+    ]
+
+
 def test_pov_mode_detection(conn: sqlite3.Connection) -> None:
-    scenes = [_pov_scene()]
+    scenes = _valid_pov_scenes()
     script = db.add_script(conn, topic="POV test", hook="H", scenes=scenes,
                            full_script="Test", mode="pov")
     assert script.mode == "pov"
@@ -57,7 +66,7 @@ def test_pov_mode_detection(conn: sqlite3.Connection) -> None:
 
 
 def test_narrator_mode_default(conn: sqlite3.Connection) -> None:
-    scenes = [_pov_scene()]
+    scenes = _valid_pov_scenes()
     script = db.add_script(conn, topic="Narrator test", hook="H", scenes=scenes,
                            full_script="Test")
     assert script.mode == "narrator"
@@ -67,8 +76,12 @@ def test_narrator_mode_default(conn: sqlite3.Connection) -> None:
 
 
 def test_dialogue_field_in_scene(conn: sqlite3.Connection) -> None:
-    scene = _pov_scene(dialogue="I can't believe this is happening.")
-    scenes = [scene]
+    scenes = [
+        _pov_scene("hook", 3, "I can't believe this is happening."),
+        _pov_scene("tension", 10, "Tension."),
+        _pov_scene("revelation", 10, "Revelation."),
+        _pov_scene("resolution", 7, "Resolution."),
+    ]
     script = db.add_script(conn, topic="Dialogue test", hook="H", scenes=scenes,
                            full_script="Test", mode="pov")
     fetched = db.get_script(conn, script.id)
@@ -76,8 +89,12 @@ def test_dialogue_field_in_scene(conn: sqlite3.Connection) -> None:
 
 
 def test_dialogue_empty_for_narrator(conn: sqlite3.Connection) -> None:
-    scene = _pov_scene(dialogue="")
-    scenes = [scene]
+    scenes = [
+        _pov_scene("hook", 3, ""),
+        _pov_scene("tension", 10, ""),
+        _pov_scene("revelation", 10, ""),
+        _pov_scene("resolution", 7, ""),
+    ]
     script = db.add_script(conn, topic="No dialogue", hook="H", scenes=scenes,
                            full_script="Test")
     fetched = db.get_script(conn, script.id)
@@ -160,7 +177,7 @@ def test_pov_dry_run_shows_steps(tmp_path: Path) -> None:
     assert "voiceover" in result.output.lower()
     assert "chunk" in result.output.lower()
     assert "Whisper" in result.output
-    assert "Flux Pro" in result.output
+    assert "reference portrait" in result.output.lower()
 
 
 # --- Narrator routing still works ---
@@ -171,13 +188,15 @@ def test_narrator_mode_routing(tmp_path: Path) -> None:
     conn = db.connect(tmp_path / "test.db")
     char = db.add_character(conn, name="Test", age="30s", gender="male",
                             appearance="short hair", clothing="t-shirt")
-    scene = Scene(beat="hook", voiceover="V", character_action="walks",
-                  location="street", character_emotion="calm", camera="tracking",
-                  lighting="golden hour sunlight", motion="walking forward",
-                  sound="traffic", caption="CAP", duration_seconds=10)
+    def _ns(beat, dur):
+        return Scene(beat=beat, voiceover="V", character_action="walks",
+                     location="street", character_emotion="calm", camera="tracking",
+                     lighting="golden hour sunlight", motion="walking forward",
+                     sound="traffic", caption="CAP", duration_seconds=dur)
+    scenes = [_ns("hook", 3), _ns("tension", 10), _ns("revelation", 12), _ns("resolution", 7)]
     db.add_script(conn, topic="Narrator test", hook="H",
-                  scenes=[scene, scene, scene],
-                  full_script="Test narrator", character_id=char.id, mode="narrator")
+                  scenes=scenes, full_script="Test narrator",
+                  character_id=char.id, mode="narrator")
     conn.close()
     result = _invoke(tmp_path, ["render", "1", "--dry-run"])
     assert "POV" not in result.output

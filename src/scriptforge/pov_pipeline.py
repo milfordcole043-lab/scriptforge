@@ -3,21 +3,23 @@ from __future__ import annotations
 import os
 import sqlite3
 import subprocess
-import urllib.request
 from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
 
 from scriptforge import db
-from scriptforge.config import ELEVENLABS_API_KEY, FAL_KEY, OUTPUT_DIR
+from scriptforge.config import (
+    ELEVENLABS_API_KEY, FAL_KEY, OUTPUT_DIR,
+    retry_api_call, safe_download,
+)
 from scriptforge.engine import build_pov_reference_prompt, build_pov_video_prompt
 from scriptforge.models import Character, Script
+from scriptforge.pipeline import COST_ELEVENLABS, COST_FABRIC, COST_FLUX_PRO
 
 console = Console()
 
-# Young female voice for POV confessional — Lily (ElevenLabs)
-POV_VOICE_ID = "pFZP5JQG7iQjIQuC4Bku"
+POV_VOICE_ID = "pFZP5JQG7iQjIQuC4Bku"  # Lily — young female
 
 
 def render_pov(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = False) -> Path | None:
@@ -50,22 +52,27 @@ def render_pov(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = Fals
     (output_dir / "clips").mkdir(parents=True, exist_ok=True)
     (output_dir / "images").mkdir(parents=True, exist_ok=True)
 
-    # Step 1: Generate full voiceover
+    # Step 1: Generate full voiceover (cached)
     console.print("\n[bold cyan]Step 1/6:[/bold cyan] Generating voiceover...")
-    voiceover = generate_pov_voiceover(script, output_dir)
+    voiceover = generate_pov_voiceover(script, output_dir, conn)
 
     # Step 2: Split audio into chunks
     console.print("[bold cyan]Step 2/6:[/bold cyan] Splitting audio into scene chunks...")
     chunks = split_audio_by_scenes(voiceover, script, output_dir)
 
-    # Step 3: Generate POV reference portrait
-    console.print("[bold cyan]Step 3/6:[/bold cyan] Generating POV reference portrait...")
+    # Step 3: Generate POV reference portrait (cached)
     first_lighting = script.scenes[0].lighting if script.scenes else ""
-    ref_image = generate_pov_reference(character, first_lighting, output_dir)
+    ref_path = output_dir / "images" / "pov_reference.png"
+    if ref_path.exists():
+        console.print("[bold cyan]Step 3/6:[/bold cyan] POV reference portrait cached, skipping.")
+        ref_image = ref_path
+    else:
+        console.print("[bold cyan]Step 3/6:[/bold cyan] Generating POV reference portrait...")
+        ref_image = generate_pov_reference(character, first_lighting, output_dir, conn, script_id)
 
     # Step 4: Generate lip-sync clips
     console.print("[bold cyan]Step 4/6:[/bold cyan] Generating lip-sync video clips...")
-    clips = generate_lipsync_clips(script, character, chunks, ref_image, output_dir)
+    clips = generate_lipsync_clips(script, character, chunks, ref_image, output_dir, conn)
 
     # Step 5: Generate word-level subtitles
     console.print("[bold cyan]Step 5/6:[/bold cyan] Generating word-level subtitles...")
@@ -75,35 +82,50 @@ def render_pov(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = Fals
     console.print("[bold cyan]Step 6/6:[/bold cyan] Assembling final video...")
     final = assemble_pov(clips, voiceover, subtitles, output_dir)
 
+    total_cost = db.get_render_cost(conn, script_id)
     console.print(f"\n[bold green]Done![/bold green] Video saved to: {final}")
+    console.print(f"[bold]Total estimated cost: ${total_cost:.2f}[/bold]")
     return final
 
 
-def generate_pov_voiceover(script: Script, output_dir: Path) -> Path:
+def generate_pov_voiceover(script: Script, output_dir: Path,
+                            conn: sqlite3.Connection | None = None) -> Path:
     """Generate POV voiceover using ElevenLabs with a female voice."""
+    voiceover_path = output_dir / "voiceover.mp3"
+
+    # Resume: skip if exists
+    if voiceover_path.exists():
+        console.print(f"    Cached: {voiceover_path.name}")
+        return voiceover_path
+
     from elevenlabs import ElevenLabs
 
     client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
-    # Use dialogue from scenes if available, otherwise full_script
     text = script.full_script
     dialogue_parts = [s.dialogue for s in script.scenes if s.dialogue]
     if dialogue_parts:
         text = " ".join(dialogue_parts)
 
-    audio_generator = client.text_to_speech.convert(
-        text=text,
-        voice_id=POV_VOICE_ID,
-        model_id="eleven_v3",
-        output_format="mp3_44100_128",
-    )
+    def _generate() -> bytes:
+        gen = client.text_to_speech.convert(
+            text=text,
+            voice_id=POV_VOICE_ID,
+            model_id="eleven_v3",
+            output_format="mp3_44100_128",
+        )
+        return b"".join(gen)
 
-    voiceover_path = output_dir / "voiceover.mp3"
+    audio_data = retry_api_call(_generate, label="ElevenLabs POV voiceover")
     with open(voiceover_path, "wb") as f:
-        for chunk in audio_generator:
-            f.write(chunk)
+        f.write(audio_data)
 
     console.print(f"    Saved: {voiceover_path.name}")
+
+    if conn:
+        dur_s = script.total_duration
+        db.log_render_step(conn, script.id, "pov_voiceover", "elevenlabs-v3", dur_s, dur_s * COST_ELEVENLABS)
+
     return voiceover_path
 
 
@@ -115,20 +137,26 @@ def split_audio_by_scenes(voiceover: Path, script: Script, output_dir: Path) -> 
     chunks: list[Path] = []
     position_ms = 0
     total_scene_duration = sum(s.duration_seconds for s in script.scenes)
-    audio_duration_s = len(audio) / 1000.0
 
     for i, scene in enumerate(script.scenes):
-        # Proportionally split audio based on scene duration ratios
+        chunk_path = output_dir / "chunks" / f"chunk_{i + 1:02d}.mp3"
+
+        # Resume: skip if exists
+        if chunk_path.exists():
+            console.print(f"    Chunk {i + 1}: cached, skipping.")
+            chunks.append(chunk_path)
+            ratio = scene.duration_seconds / total_scene_duration
+            position_ms += int(ratio * len(audio))
+            continue
+
         ratio = scene.duration_seconds / total_scene_duration
         chunk_duration_ms = int(ratio * len(audio))
 
-        # Last chunk gets remainder
         if i == len(script.scenes) - 1:
             chunk = audio[position_ms:]
         else:
             chunk = audio[position_ms:position_ms + chunk_duration_ms]
 
-        chunk_path = output_dir / "chunks" / f"chunk_{i + 1:02d}.mp3"
         chunk.export(str(chunk_path), format="mp3")
         chunk_duration_s = len(chunk) / 1000.0
         console.print(f"    Chunk {i + 1}: {chunk_duration_s:.1f}s ({scene.beat})")
@@ -138,27 +166,39 @@ def split_audio_by_scenes(voiceover: Path, script: Script, output_dir: Path) -> 
     return chunks
 
 
-def generate_pov_reference(character: Character, lighting: str, output_dir: Path) -> Path:
+def generate_pov_reference(character: Character, lighting: str, output_dir: Path,
+                            conn: sqlite3.Connection | None = None,
+                            script_id: int = 0) -> Path:
     """Generate a POV selfie reference portrait via Flux Pro."""
     import fal_client
 
     os.environ["FAL_KEY"] = FAL_KEY
+    ref_path = output_dir / "images" / "pov_reference.png"
+
+    if ref_path.exists():
+        console.print(f"    Cached: {ref_path.name}")
+        return ref_path
+
     prompt = build_pov_reference_prompt(character, lighting)
 
-    result = fal_client.subscribe(
-        "fal-ai/flux-pro/v1.1",
+    result = retry_api_call(
+        fal_client.subscribe, "fal-ai/flux-pro/v1.1",
         arguments={"prompt": prompt, "image_size": "portrait_16_9", "num_images": 1},
+        label="Flux Pro (POV reference)",
     )
-    image_url = result["images"][0]["url"]
-    ref_path = output_dir / "images" / "pov_reference.png"
-    urllib.request.urlretrieve(image_url, str(ref_path))
+    safe_download(result["images"][0]["url"], str(ref_path), label="POV reference")
     console.print(f"    Saved: {ref_path.name}")
+
+    if conn and script_id:
+        db.log_render_step(conn, script_id, "pov_reference", "flux-pro", 0, COST_FLUX_PRO)
+
     return ref_path
 
 
 def generate_lipsync_clips(script: Script, character: Character,
                             chunks: list[Path], ref_image: Path,
-                            output_dir: Path) -> list[Path]:
+                            output_dir: Path,
+                            conn: sqlite3.Connection | None = None) -> list[Path]:
     """Generate lip-synced video clips using VEED Fabric 1.0."""
     import fal_client
 
@@ -167,25 +207,44 @@ def generate_lipsync_clips(script: Script, character: Character,
     current_image = ref_image
 
     for i, (scene, chunk) in enumerate(zip(script.scenes, chunks)):
+        clip_path = output_dir / "clips" / f"clip_{i + 1:02d}.mp4"
+
+        # Resume: skip if exists
+        if clip_path.exists():
+            console.print(f"  Scene {i + 1}/{len(script.scenes)} [{scene.beat}]: cached, skipping.")
+            clips.append(clip_path)
+            # Still try to extract last frame for chaining
+            if i < len(script.scenes) - 1:
+                lf = extract_last_frame(clip_path, output_dir, i + 1)
+                if lf:
+                    current_image = lf
+            continue
+
         console.print(f"  Scene {i + 1}/{len(script.scenes)} [{scene.beat}]: generating lip-sync clip...")
 
-        image_url = fal_client.upload_file(str(current_image))
-        audio_url = fal_client.upload_file(str(chunk))
-
-        result = fal_client.subscribe(
-            "veed/fabric-1.0",
-            arguments={
-                "image_url": image_url,
-                "audio_url": audio_url,
-                "resolution": "720p",
-            },
+        image_url = retry_api_call(
+            fal_client.upload_file, str(current_image),
+            label=f"upload reference for scene {i + 1}",
+        )
+        audio_url = retry_api_call(
+            fal_client.upload_file, str(chunk),
+            label=f"upload audio chunk {i + 1}",
         )
 
-        video_url = result["video"]["url"]
-        clip_path = output_dir / "clips" / f"clip_{i + 1:02d}.mp4"
-        urllib.request.urlretrieve(video_url, str(clip_path))
+        result = retry_api_call(
+            fal_client.subscribe, "veed/fabric-1.0",
+            arguments={"image_url": image_url, "audio_url": audio_url, "resolution": "720p"},
+            label=f"VEED Fabric (scene {i + 1})",
+        )
+
+        safe_download(result["video"]["url"], str(clip_path), label=f"scene {i + 1} lip-sync clip")
         console.print(f"    Saved: {clip_path.name}")
         clips.append(clip_path)
+
+        if conn:
+            dur_s = scene.duration_seconds
+            db.log_render_step(conn, script.id, f"lipsync_scene_{i + 1}", "veed-fabric",
+                               dur_s, dur_s * COST_FABRIC)
 
         # Extract last frame for next clip's reference
         if i < len(script.scenes) - 1:
@@ -199,11 +258,13 @@ def generate_lipsync_clips(script: Script, character: Character,
 def extract_last_frame(clip_path: Path, output_dir: Path, scene_num: int) -> Path | None:
     """Extract the last frame of a video clip using FFmpeg."""
     frame_path = output_dir / "images" / f"lastframe_{scene_num:02d}.png"
+    if frame_path.exists():
+        return frame_path
     cmd = [
         "ffmpeg", "-y", "-sseof", "-0.1", "-i", str(clip_path),
         "-frames:v", "1", "-q:v", "2", str(frame_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if result.returncode != 0:
         console.print(f"    [yellow]Could not extract last frame, reusing previous reference[/yellow]")
         return None
@@ -213,12 +274,18 @@ def extract_last_frame(clip_path: Path, output_dir: Path, scene_num: int) -> Pat
 
 def generate_subtitles(voiceover: Path, output_dir: Path) -> Path:
     """Generate word-level subtitles using faster-whisper."""
+    ass_path = output_dir / "subtitles.ass"
+
+    # Resume: skip if exists
+    if ass_path.exists():
+        console.print(f"    Cached: {ass_path.name}")
+        return ass_path
+
     from faster_whisper import WhisperModel
 
     model = WhisperModel("base", compute_type="int8")
     segments, _ = model.transcribe(str(voiceover), word_timestamps=True)
 
-    ass_path = output_dir / "subtitles.ass"
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -262,12 +329,13 @@ def _format_ass_time(seconds: float) -> str:
 def assemble_pov(clips: list[Path], voiceover: Path, subtitles: Path,
                   output_dir: Path) -> Path:
     """Assemble POV video: concat clips + original voiceover + word-level subtitles."""
+    final_path = output_dir / "final.mp4"
+
     concat_path = output_dir / "concat.txt"
     with open(concat_path, "w") as f:
         for clip in clips:
             f.write(f"file '{clip.resolve()}'\n")
 
-    # First concat clips without audio
     concat_video = output_dir / "concat_video.mp4"
     cmd_concat = [
         "ffmpeg", "-y",
@@ -275,24 +343,23 @@ def assemble_pov(clips: list[Path], voiceover: Path, subtitles: Path,
         "-c:v", "copy", "-an",
         str(concat_video),
     ]
-    result = subprocess.run(cmd_concat, capture_output=True, text=True)
+    result = subprocess.run(cmd_concat, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         console.print(f"[red]FFmpeg concat error:[/red]\n{result.stderr}")
         raise RuntimeError("FFmpeg concat failed")
 
-    # Then overlay voiceover + burn subtitles
-    final_path = output_dir / "final.mp4"
+    # Overlay voiceover + burn subtitles
+    sub_path_str = str(subtitles.resolve()).replace("\\", "/").replace(":", "\\:")
     cmd_final = [
         "ffmpeg", "-y",
         "-i", str(concat_video),
         "-i", str(voiceover),
-        "-vf", f"ass='{subtitles.resolve()}'",
+        "-vf", f"ass={sub_path_str}",
         "-c:v", "libx264", "-c:a", "aac", "-shortest",
         str(final_path),
     ]
-    result = subprocess.run(cmd_final, capture_output=True, text=True)
+    result = subprocess.run(cmd_final, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
-        # Fallback without subtitles if ASS burn fails
         console.print(f"  [yellow]Subtitle burn failed, assembling without subtitles[/yellow]")
         cmd_fallback = [
             "ffmpeg", "-y",
@@ -301,11 +368,10 @@ def assemble_pov(clips: list[Path], voiceover: Path, subtitles: Path,
             "-c:v", "copy", "-c:a", "aac", "-shortest",
             str(final_path),
         ]
-        result = subprocess.run(cmd_fallback, capture_output=True, text=True)
+        result = subprocess.run(cmd_fallback, capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
             raise RuntimeError("FFmpeg assembly failed")
 
-    # Clean up temp files
     concat_path.unlink(missing_ok=True)
     concat_video.unlink(missing_ok=True)
     console.print(f"    Saved: {final_path.name}")
@@ -322,9 +388,13 @@ def _show_pov_dry_run(script: Script, character: Character, output_dir: Path) ->
     console.print(f"  Total scenes: {len(script.scenes)}")
     total_duration = sum(s.duration_seconds for s in script.scenes)
     console.print(f"  Total duration: {total_duration}s")
-    console.print(f"  Estimated Fabric calls: {len(script.scenes)}")
-    cost = total_duration * 0.15
-    console.print(f"  Estimated cost: ~${cost:.2f} (Fabric 720p) + ElevenLabs + Flux Pro")
+
+    ref_cost = COST_FLUX_PRO if not (output_dir / "images" / "pov_reference.png").exists() else 0
+    fabric_cost = total_duration * COST_FABRIC
+    vo_cost = total_duration * COST_ELEVENLABS
+    total_cost = ref_cost + fabric_cost + vo_cost
+    console.print(f"  [bold]Estimated cost: ~${total_cost:.2f}[/bold]")
+    console.print(f"    Reference: ${ref_cost:.2f} | Clips: ${fabric_cost:.2f} | Voiceover: ${vo_cost:.2f}")
     console.print()
 
     table = Table(title="POV Render Plan")
@@ -348,7 +418,8 @@ def _show_pov_dry_run(script: Script, character: Character, output_dir: Path) ->
 
     console.print(f"\n  [bold]Step 1:[/bold] Generate voiceover (ElevenLabs, female voice)")
     console.print(f"  [bold]Step 2:[/bold] Split audio into {len(script.scenes)} scene chunks")
-    console.print(f"  [bold]Step 3:[/bold] Generate POV reference portrait (Flux Pro, selfie angle, teeth visible)")
+    ref_status = "cached" if (output_dir / "images" / "pov_reference.png").exists() else "generate new"
+    console.print(f"  [bold]Step 3:[/bold] POV reference portrait ({ref_status})")
     console.print(f"  [bold]Step 4:[/bold] Generate {len(script.scenes)} lip-sync clips (VEED Fabric 1.0, chained)")
     console.print(f"  [bold]Step 5:[/bold] Generate word-level subtitles (Whisper)")
     console.print(f"  [bold]Step 6:[/bold] Assemble with FFmpeg (concat + voiceover + subtitles)")

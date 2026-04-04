@@ -86,6 +86,7 @@ def test_render_dry_run_shows_steps(tmp_path: Path) -> None:
     assert "Kling" in result.output
     assert "ElevenLabs" in result.output
     assert "caption" in result.output.lower()
+    assert "$" in result.output  # cost estimate
 
 
 def test_render_dry_run_shows_character_actions(tmp_path: Path) -> None:
@@ -110,11 +111,11 @@ def test_render_not_found(tmp_path: Path) -> None:
 def test_render_no_character(tmp_path: Path) -> None:
     """Script without character should fail."""
     conn = db.connect(tmp_path / "test.db")
-    scenes = [
-        Scene(beat="hook", voiceover="V", character_action="a", location="room",
-              character_emotion="e", camera="static", lighting="lamp light",
-              motion="m", sound="s", caption="C", duration_seconds=10),
-    ]
+    def _ns(beat, dur):
+        return Scene(beat=beat, voiceover="V", character_action="a", location="room",
+                     character_emotion="e", camera="static", lighting="lamp light",
+                     motion="m", sound="s", caption="C", duration_seconds=dur)
+    scenes = [_ns("hook", 3), _ns("tension", 10), _ns("revelation", 12), _ns("resolution", 7)]
     db.add_script(conn, topic="No char", hook="H", scenes=scenes, full_script="T")
     conn.close()
     result = _invoke(tmp_path, ["render", "1", "--dry-run"])

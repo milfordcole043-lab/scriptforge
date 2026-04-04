@@ -4,7 +4,10 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from scriptforge.models import Character, FeedbackEntry, Finding, Hook, PromptRule, Rule, Scene, Script, VoiceProfile
+from scriptforge.models import (
+    Character, FeedbackEntry, Finding, Hook, PromptRule, Rule, Scene, Script,
+    VoiceProfile, validate_script,
+)
 
 DEFAULT_DB = Path.home() / ".scriptforge" / "scriptforge.db"
 
@@ -121,6 +124,20 @@ CREATE TABLE IF NOT EXISTS character_profiles (
 );
 """
 
+_CREATE_RENDER_LOG = """
+CREATE TABLE IF NOT EXISTS render_log (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    script_id        INTEGER NOT NULL,
+    step             TEXT    NOT NULL,
+    model            TEXT    NOT NULL,
+    duration_seconds REAL    DEFAULT 0,
+    estimated_cost   REAL    DEFAULT 0,
+    status           TEXT    NOT NULL,
+    created_at       TEXT    NOT NULL,
+    FOREIGN KEY (script_id) REFERENCES scripts(id)
+);
+"""
+
 _DEFAULT_PROMPT_RULES = [
     ("subject", "describe one primary subject per scene, be specific about appearance", 9),
     ("camera", "always specify camera movement -- tracking, dolly, crane, static, handheld", 8),
@@ -193,6 +210,7 @@ def connect(db_path: Path = DEFAULT_DB) -> sqlite3.Connection:
     conn.execute(_CREATE_RESEARCH_FINDINGS)
     conn.execute(_CREATE_PROMPT_RULES)
     conn.execute(_CREATE_CHARACTER_PROFILES)
+    conn.execute(_CREATE_RENDER_LOG)
     _migrate(conn)
     conn.commit()
     return conn
@@ -255,6 +273,9 @@ def add_script(
     mode: str = "narrator",
     tags: list[str] | None = None,
 ) -> Script:
+    errors = validate_script(scenes, full_script)
+    if errors:
+        raise ValueError(f"Script validation failed: {'; '.join(errors)}")
     now = datetime.now().isoformat()
     word_count = len(full_script.split())
     scenes_json = Script(
@@ -491,8 +512,8 @@ def set_voice_profile(conn: sqlite3.Connection, attribute: str, value: str) -> V
     now = datetime.now().isoformat()
     conn.execute(
         "INSERT INTO voice_profile (attribute, value, created_at) VALUES (?, ?, ?) "
-        "ON CONFLICT(attribute) DO UPDATE SET value = ?, active = 1",
-        (attribute, value, now, value),
+        "ON CONFLICT(attribute) DO UPDATE SET value = excluded.value, active = 1",
+        (attribute, value, now),
     )
     conn.commit()
     row = conn.execute(
@@ -632,6 +653,29 @@ def _attach_tags(conn: sqlite3.Connection, scripts: list[Script]) -> None:
         tag_map[sid].append(tag)
     for s in scripts:
         s.tags = tag_map.get(s.id, [])
+
+
+# --- Render Log ---
+
+
+def log_render_step(conn: sqlite3.Connection, script_id: int, step: str, model: str,
+                    duration_seconds: float = 0, estimated_cost: float = 0,
+                    status: str = "success") -> None:
+    now = datetime.now().isoformat()
+    conn.execute(
+        "INSERT INTO render_log (script_id, step, model, duration_seconds, estimated_cost, status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (script_id, step, model, duration_seconds, estimated_cost, status, now),
+    )
+    conn.commit()
+
+
+def get_render_cost(conn: sqlite3.Connection, script_id: int) -> float:
+    row = conn.execute(
+        "SELECT COALESCE(SUM(estimated_cost), 0) FROM render_log WHERE script_id = ? AND status = 'success'",
+        (script_id,),
+    ).fetchone()
+    return row[0]
 
 
 # --- Internal ---
