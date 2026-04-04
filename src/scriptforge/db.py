@@ -220,8 +220,8 @@ _DEFAULT_RULES = [
     ("Start in a moment, not a topic. Never open with 'Did you know' or 'Scientists found'", "storytelling", "narrative arc system"),
     ("Use 'you' like a mirror -- second person, present tense, always", "voice", "narrative arc system"),
     ("One emotion per scene. Don't mix.", "emotion", "narrative arc system"),
-    ("Science is the twist, not the point. Feeling first, facts second.", "structure", "narrative arc system"),
-    ("End with a reframe, not advice. No 'so next time you...' -- just reframe.", "structure", "narrative arc system"),
+    ("Science reveals a hidden superpower. The twist should make the viewer feel powerful, not broken.", "structure", "narrative arc system"),
+    ("End with empowerment, not advice. The viewer should feel stronger, more capable, more understood.", "structure", "narrative arc system"),
     ("Short sentences for impact. Questions to pull the viewer in.", "pacing", "narrative arc system"),
     ("Every scene shows the CHARACTER experiencing the emotion. The viewer watches a person go through it, not an abstract concept.", "character", "character system"),
     ("Describe real locations the viewer recognizes -- bedrooms, kitchens, bus stops, rain-soaked streets. Never abstract voids.", "location", "character system"),
@@ -233,11 +233,11 @@ _DEFAULT_RULES = [
     ("Bold on-screen captions on every scene -- 3-5 words that punch", "caption", "narrative arc system"),
     ("Start with the payoff or the feeling, then explain. Inverted structure beats traditional.", "structure", "narrative arc system"),
     # POV rules
-    ("Write like someone talking to their phone camera at 3 AM. Not polished. Real.", "pov", "pov system"),
+    ("Write like someone who just discovered something incredible about themselves. Excited, curious, amazed.", "pov", "pov system"),
     ("Include natural speech patterns: pauses, restarts, trailing off", "pov", "pov system"),
     ("The character discovers the science in real time. She reacts to it, doesn't recite it.", "pov", "pov system"),
     ("First person always in POV mode. 'I can't sleep' not 'you can't sleep'", "pov", "pov system"),
-    ("End with a feeling the viewer carries, not a conclusion. Make them want to comment.", "pov", "pov system"),
+    ("End with wonder. The viewer should feel capable, understood, and curious -- never hopeless.", "pov", "pov system"),
     ("Keep each sentence short enough to be one video chunk (3-7 seconds of speech max)", "pov", "pov system"),
     # Variety rules
     ("Never repeat the same location in consecutive scripts. Track what was used last and choose something different.", "variety", "variety system"),
@@ -246,16 +246,21 @@ _DEFAULT_RULES = [
     ("Vary time of day. Not always 3 AM. Use: golden hour, lunch break, crowded room, walking home at night, morning after, sunset, bathroom at work.", "variety", "variety system"),
     ("Vary camera energy for POV. Not always static selfie. Use: walking and talking, sitting in car, lying on floor, pacing, leaning against wall, standing at window.", "variety", "variety system"),
     ("Each video must feel like a different moment in a different day -- not the same night replayed with different words.", "variety", "variety system"),
+    # Empowerment rules
+    ("The viewer should feel STRONGER after watching, never weaker. The science explains their power, not their pain.", "storytelling", "tone system"),
+    ("Reframe every psychological fact as a superpower or hidden ability, not a dysfunction.", "storytelling", "tone system"),
+    ("The character discovers something amazing about themselves, not something broken.", "character", "tone system"),
+    ("Use words like: incredible, powerful, designed to, built for, capable of -- not: broken, damaged, withdrawal, dysfunction.", "voice", "tone system"),
 ]
 
 _DEFAULT_VOICE_PROFILE = [
-    ("tone", "warm and personal, like telling a friend something that changed how you see the world"),
+    ("tone", "warm, fascinated, like sharing a secret that will change how you see yourself"),
     ("person", "second person (you/your)"),
     ("tense", "present tense"),
     ("style", "storytelling, not educational. Emotion before information."),
     ("pacing", "slow, cinematic. Pauses are powerful. Silence between beats."),
     ("pov_person", "first person (I/me/my)"),
-    ("pov_style", "raw confessional, like talking to phone camera at 3 AM"),
+    ("pov_style", "curious, increasingly amazed, like discovering a superpower you didn't know you had"),
     ("pov_pacing", "natural speech with pauses, restarts, trailing off. NOT polished."),
 ]
 
@@ -366,6 +371,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE scripts ADD COLUMN mode TEXT DEFAULT 'narrator'")
     if "template_id" not in columns:
         conn.execute("ALTER TABLE scripts ADD COLUMN template_id INTEGER")
+
+    cp_cols = {row[1] for row in conn.execute("PRAGMA table_info(character_profiles)").fetchall()}
+    if "wardrobe" not in cp_cols:
+        conn.execute("ALTER TABLE character_profiles ADD COLUMN wardrobe TEXT DEFAULT '[]'")
 
 
 def seed_defaults(conn: sqlite3.Connection) -> None:
@@ -627,9 +636,19 @@ def add_character(conn: sqlite3.Connection, name: str, age: str, gender: str,
                      created_at=datetime.fromisoformat(now))
 
 
+def _parse_wardrobe(raw: str | None) -> list[str]:
+    import json as _json
+    if not raw:
+        return []
+    try:
+        return _json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+
+
 def get_character(conn: sqlite3.Connection, character_id: int) -> Character | None:
     row = conn.execute(
-        "SELECT id, name, age, gender, appearance, clothing, reference_image_path, created_at "
+        "SELECT id, name, age, gender, appearance, clothing, reference_image_path, wardrobe, created_at "
         "FROM character_profiles WHERE id = ?",
         (character_id,),
     ).fetchone()
@@ -637,17 +656,31 @@ def get_character(conn: sqlite3.Connection, character_id: int) -> Character | No
         return None
     return Character(id=row[0], name=row[1], age=row[2], gender=row[3],
                      appearance=row[4], clothing=row[5], reference_image_path=row[6],
-                     created_at=datetime.fromisoformat(row[7]))
+                     wardrobe=_parse_wardrobe(row[7]),
+                     created_at=datetime.fromisoformat(row[8]))
 
 
 def list_characters(conn: sqlite3.Connection) -> list[Character]:
     rows = conn.execute(
-        "SELECT id, name, age, gender, appearance, clothing, reference_image_path, created_at "
+        "SELECT id, name, age, gender, appearance, clothing, reference_image_path, wardrobe, created_at "
         "FROM character_profiles ORDER BY created_at DESC",
     ).fetchall()
     return [Character(id=r[0], name=r[1], age=r[2], gender=r[3], appearance=r[4],
                       clothing=r[5], reference_image_path=r[6],
-                      created_at=datetime.fromisoformat(r[7])) for r in rows]
+                      wardrobe=_parse_wardrobe(r[7]),
+                      created_at=datetime.fromisoformat(r[8])) for r in rows]
+
+
+def update_character_wardrobe(conn: sqlite3.Connection, character_id: int,
+                               wardrobe: list[str]) -> bool:
+    """Update a character's wardrobe (list of outfit descriptions)."""
+    import json as _json
+    cur = conn.execute(
+        "UPDATE character_profiles SET wardrobe = ? WHERE id = ?",
+        (_json.dumps(wardrobe), character_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
 
 
 def update_character_image(conn: sqlite3.Connection, character_id: int, path: str) -> bool:

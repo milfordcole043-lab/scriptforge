@@ -108,7 +108,8 @@ def _build_temporal_motion(scene: Scene) -> str:
 def build_video_prompt(scene: Scene, character: Character | None = None,
                         prev_scene: Scene | None = None,
                         scenes: list[Scene] | None = None,
-                        scene_index: int = 0) -> str:
+                        scene_index: int = 0,
+                        outfit_override: str | None = None) -> str:
     """Build a labelled, character-driven video prompt with temporal flow and connectivity."""
     sections = []
 
@@ -118,10 +119,11 @@ def build_video_prompt(scene: Scene, character: Character | None = None,
 
     # [SUBJECT] — character + emotion
     if character:
+        clothing = outfit_override or character.clothing
         emotion_cue = f", {scene.character_emotion}" if scene.character_emotion else ""
         sections.append(
             f"[SUBJECT] A {character.gender} in {character.age} with {character.appearance}, "
-            f"wearing {character.clothing}{emotion_cue}"
+            f"wearing {clothing}{emotion_cue}"
         )
 
     # Continuity note for scenes 2+
@@ -158,17 +160,19 @@ def build_video_prompt(scene: Scene, character: Character | None = None,
 def build_pov_video_prompt(scene: Scene, character: Character,
                            prev_scene: Scene | None = None,
                            scenes: list[Scene] | None = None,
-                           scene_index: int = 0) -> str:
+                           scene_index: int = 0,
+                           outfit_override: str | None = None) -> str:
     """Build a POV lip-sync video prompt for VEED Fabric with connectivity."""
     sections = []
 
     if scene.location:
         sections.append(f"[SCENE] {scene.location}")
 
+    clothing = outfit_override or character.clothing
     emotion_cue = f", {scene.character_emotion}" if scene.character_emotion else ""
     sections.append(
         f"[SUBJECT] A {character.gender} in {character.age} with {character.appearance}, "
-        f"wearing {character.clothing}{emotion_cue}"
+        f"wearing {clothing}{emotion_cue}"
     )
 
     # Continuity for scenes 2+
@@ -196,11 +200,13 @@ def build_pov_video_prompt(scene: Scene, character: Character,
 
 
 def build_pov_reference_prompt(character: Character, lighting: str = "",
-                                hook_emotion: str = "") -> str:
+                                hook_emotion: str = "",
+                                outfit_override: str | None = None) -> str:
     """Build a Flux Pro prompt for a POV selfie reference portrait with emotional state."""
+    clothing = outfit_override or character.clothing
     parts = [
         f"A {character.gender} in {character.age} with {character.appearance}, "
-        f"wearing {character.clothing}",
+        f"wearing {clothing}",
     ]
     # Emotional state from hook scene — far more important than generic smile
     if hook_emotion:
@@ -250,19 +256,24 @@ def _interpolate_lighting(scenes: list[Scene], index: int) -> str:
 
 
 def _extract_recent_variety(conn: sqlite3.Connection, limit: int = 3) -> dict:
-    """Extract locations, lighting, emotions, cameras from the last N scripts."""
+    """Extract locations, lighting, emotions, cameras, outfits from the last N scripts."""
     scripts = db.list_scripts(conn)[:limit]
     locations: list[str] = []
     lighting: list[str] = []
     emotions: list[str] = []
     cameras: list[str] = []
     templates: list[str] = []
+    outfits: list[str] = []
 
     for s in scripts:
         if s.template_id:
             t = db.get_template(conn, s.template_id)
             if t:
                 templates.append(t.name)
+        if s.character_id:
+            char = db.get_character(conn, s.character_id)
+            if char and char.clothing and char.clothing not in outfits:
+                outfits.append(char.clothing)
         for scene in s.scenes:
             if scene.location and scene.location not in locations:
                 locations.append(scene.location)
@@ -279,10 +290,27 @@ def _extract_recent_variety(conn: sqlite3.Connection, limit: int = 3) -> dict:
         "emotions": emotions[:6],
         "cameras": cameras[:6],
         "templates": templates[:3],
+        "outfits": outfits[:3],
     }
 
 
 # --- Write context ---
+
+
+def _pick_outfit(conn: sqlite3.Connection, character_id: int | None,
+                  recent_outfits: list[str]) -> str | None:
+    """Pick an outfit from character wardrobe that wasn't used recently."""
+    if not character_id:
+        return None
+    char = db.get_character(conn, character_id)
+    if not char or not char.wardrobe:
+        return None
+    # Pick first outfit not in recent list
+    for outfit in char.wardrobe:
+        if outfit not in recent_outfits:
+            return outfit
+    # All used recently — just pick the first one
+    return char.wardrobe[0]
 
 
 def build_write_context(
@@ -292,6 +320,7 @@ def build_write_context(
     duration_target: int,
     mode: str = "narrator",
     template_name: str | None = None,
+    character_id: int | None = None,
 ) -> dict:
     """Assemble all context needed to write a new script."""
     rules = db.get_active_rules(conn)
@@ -304,12 +333,15 @@ def build_write_context(
     # Template matching
     template, template_reason = match_template(topic, conn, override_name=template_name)
 
+    # Outfit selection from wardrobe
+    outfit = _pick_outfit(conn, character_id, recent_variety.get("outfits", []))
+
     # Mode-aware voice profile filtering
     filtered_profile = _filter_voice_profile(voice_profile, mode)
 
     prompt = _build_write_prompt(topic, style, duration_target, rules, top_hooks, patterns,
                                   filtered_profile, mode, scene_patterns, template=template,
-                                  recent_variety=recent_variety)
+                                  recent_variety=recent_variety, outfit=outfit)
 
     return {
         "topic": topic,
@@ -322,6 +354,7 @@ def build_write_context(
         "template": template,
         "template_reason": template_reason,
         "recent_variety": recent_variety,
+        "outfit": outfit,
         "prompt": prompt,
     }
 
@@ -438,6 +471,7 @@ def _build_write_prompt(
     scene_patterns: dict | None = None,
     template: StoryTemplate | None = None,
     recent_variety: dict | None = None,
+    outfit: str | None = None,
 ) -> str:
     """Build the full prompt for writing a new script."""
     wpm = WPM
@@ -447,6 +481,8 @@ def _build_write_prompt(
     sections.append(f"Write a {style} video script about: {topic}")
     sections.append(f"Target duration: {duration_target} seconds (~{word_target} words at {wpm} wpm)")
     sections.append(f"Mode: {mode}")
+    if outfit:
+        sections.append(f"Character outfit for this video: {outfit}")
 
     if template:
         # Template-driven narrative arc
@@ -522,7 +558,7 @@ def _build_write_prompt(
             sections.append(f"- {note}")
 
     if recent_variety:
-        has_data = any(recent_variety.get(k) for k in ("locations", "lighting", "emotions", "cameras"))
+        has_data = any(recent_variety.get(k) for k in ("locations", "lighting", "emotions", "cameras", "outfits"))
         if has_data:
             sections.append("\n--- AVOID REPEATING (from last 3 scripts — choose something DIFFERENT) ---")
             if recent_variety.get("locations"):
@@ -535,6 +571,8 @@ def _build_write_prompt(
                 sections.append(f"Camera styles: {', '.join(recent_variety['cameras'])}")
             if recent_variety.get("templates"):
                 sections.append(f"Templates used: {', '.join(recent_variety['templates'])}")
+            if recent_variety.get("outfits"):
+                sections.append(f"Outfits used: {', '.join(recent_variety['outfits'])}")
             sections.append("Each video must feel like a different moment in a different day.")
 
     if scene_patterns and scene_patterns.get("patterns"):

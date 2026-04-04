@@ -30,6 +30,7 @@ class Character:
     clothing: str
     created_at: datetime | None = None
     reference_image_path: str | None = None
+    wardrobe: list[str] = field(default_factory=list)
 
 
 @dataclass
