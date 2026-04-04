@@ -255,6 +255,10 @@ _DEFAULT_RULES = [
     ("POV emotions must be simple and clear -- one feeling, not contradictions. Lip-sync renders curiosity, amusement, fascination, and quiet realization well. It renders shock, desperation, and masked emotions poorly.", "pov", "data-optimization"),
     ("Revelation beats should use realization or fascination emotions, not shock or devastation. Data shows quiet realization scores 3.7/5 vs shock at 3.3/5.", "emotion", "data-optimization"),
     ("The revelation/reveal beat should be the SHORTEST content beat, not the longest. Hit the twist fast -- don't explain it. Let the viewer's brain do the work.", "structure", "data-optimization"),
+    # Background and depth rules
+    ("Every scene must have at least 2 background motion elements that match the location -- leaves, pedestrians, steam, reflections. Never a static dead background.", "visual", "background system"),
+    ("Every scene must have a micro-lighting shift -- a subtle change within the scene that prevents static feeling. Cloud shadows, flickering lights, passing headlights.", "lighting", "background system"),
+    ("Background figures should always be in soft bokeh blur to keep focus on the character. Never sharp background detail competing with the subject.", "visual", "background system"),
 ]
 
 _DEFAULT_VOICE_PROFILE = [

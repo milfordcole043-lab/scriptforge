@@ -105,6 +105,77 @@ def _build_temporal_motion(scene: Scene) -> str:
 # --- Video prompt builders ---
 
 
+# --- Background generation ---
+
+_BACKGROUND_ELEMENTS = {
+    "park": {
+        "movements": ["leaves drifting slowly across frame", "jogger crossing in soft focus behind her", "birds lifting off from nearby bench", "dog walker passing in distant background", "wind catching loose petals", "squirrel darting across grass in bokeh blur"],
+        "micro_lighting": ["cloud shadow drifts across her face then clears", "sunbeam shifts as branch sways overhead", "light flickers as leaves move in wind"],
+        "depth": ["trees in layered soft bokeh blur behind her", "distant park-goers as soft colored shapes", "grass blades sharp in foreground, everything else soft"],
+    },
+    "coffee": {
+        "movements": ["steam rising from cup in foreground", "barista moving behind counter in soft focus", "someone walking past the window outside", "reflections shifting in glass behind her", "espresso machine steam burst in background", "person sitting down at next table in blur"],
+        "micro_lighting": ["warm light from window shifts as cloud passes", "overhead lamp sways slightly changing shadow angle", "reflection moves across her face from passing car outside"],
+        "depth": ["other customers in warm bokeh blur", "coffee equipment as abstract shapes behind her", "window reflections layering over background"],
+    },
+    "car": {
+        "movements": ["streetlights sliding across windshield", "rain streaks crawling down side window", "headlights of passing car sweeping across", "traffic signal changing color reflected in glass", "wipers clearing rain in rhythm", "dashboard glow pulsing slightly"],
+        "micro_lighting": ["streetlight passes overhead casting moving shadow", "oncoming headlights briefly brighten then fade", "traffic light shifts from red glow to green"],
+        "depth": ["rain-blurred city lights through windshield", "passing cars as streaked light trails", "dashboard instruments glowing in soft foreground blur"],
+    },
+    "bathroom": {
+        "movements": ["steam slowly rising from unseen source", "fluorescent light flickering once subtly", "water droplet sliding down mirror edge", "towel swaying slightly from vent air", "condensation forming on mirror edge", "shadow shifting as someone walks past door"],
+        "micro_lighting": ["fluorescent flickers once then stabilizes", "light reflects differently as steam thins", "shadow from hallway shifts under door crack"],
+        "depth": ["mirror reflection creating depth behind her", "tiles in soft focus receding into background", "shower curtain as soft textured backdrop"],
+    },
+    "street": {
+        "movements": ["pedestrians crossing in soft focus behind her", "car headlights sweeping past", "pigeons scattering from nearby", "neon sign flickering in reflection", "plastic bag drifting in wind", "bicycle passing in background blur"],
+        "micro_lighting": ["neon sign pulses changing the color temperature", "headlights sweep across casting moving shadows", "streetlight flickers once then holds steady"],
+        "depth": ["buildings receding in atmospheric perspective", "traffic lights as colorful bokeh circles", "pedestrians as soft silhouettes at distance"],
+    },
+    "rooftop": {
+        "movements": ["wind catching her hair gently", "distant plane crossing the sky slowly", "city lights twinkling below", "clouds drifting past moon or sun", "birds crossing frame in distance", "flag or antenna swaying on nearby building"],
+        "micro_lighting": ["cloud edge passes revealing brighter sky", "sun angle shifts slightly deepening shadows", "city lights below brighten as sky dims"],
+        "depth": ["city skyline in atmospheric haze", "distant buildings as layered silhouettes", "sky gradient creating infinite depth behind her"],
+    },
+}
+
+
+def generate_background_elements(location: str, lighting: str = "",
+                                  time_of_day: str = "") -> dict:
+    """Generate cinematic background elements based on location keywords."""
+    import random
+    location_lower = location.lower()
+
+    # Match location to category
+    category = None
+    for key in _BACKGROUND_ELEMENTS:
+        if key in location_lower:
+            category = key
+            break
+    # Fallback: check for broader matches
+    if not category:
+        if any(w in location_lower for w in ("outdoor", "garden", "bench", "field", "trail")):
+            category = "park"
+        elif any(w in location_lower for w in ("cafe", "restaurant", "bar", "diner")):
+            category = "coffee"
+        elif any(w in location_lower for w in ("vehicle", "taxi", "bus", "uber")):
+            category = "car"
+        elif any(w in location_lower for w in ("office", "kitchen", "bedroom", "room", "indoor")):
+            category = "bathroom"
+        elif any(w in location_lower for w in ("sidewalk", "alley", "corner", "city", "urban")):
+            category = "street"
+        else:
+            category = "park"  # Safe default
+
+    elements = _BACKGROUND_ELEMENTS[category]
+    return {
+        "background_movement": random.sample(elements["movements"], min(3, len(elements["movements"]))),
+        "micro_lighting": random.choice(elements["micro_lighting"]),
+        "ambient_depth": random.choice(elements["depth"]),
+    }
+
+
 def build_video_prompt(scene: Scene, character: Character | None = None,
                         prev_scene: Scene | None = None,
                         scenes: list[Scene] | None = None,
@@ -139,12 +210,17 @@ def build_video_prompt(scene: Scene, character: Character | None = None,
     if scene.camera:
         sections.append(f"[CAMERA] {scene.camera}")
 
-    # [LIGHTING] — with interpolation if scenes provided
+    # [LIGHTING] — with interpolation and micro-lighting shift
     lighting = scene.lighting
     if scenes and len(scenes) > 1 and scene_index > 0:
         lighting = _interpolate_lighting(scenes, scene_index)
+    bg = generate_background_elements(scene.location, scene.lighting)
     if lighting:
-        sections.append(f"[LIGHTING] {lighting}. Consistent lighting throughout")
+        sections.append(f"[LIGHTING] {lighting}. {bg['micro_lighting']}. Consistent lighting throughout")
+
+    # [BACKGROUND] — auto-generated cinematic elements
+    bg_moves = ", ".join(bg["background_movement"])
+    sections.append(f"[BACKGROUND] {bg_moves}. All background elements in soft bokeh blur")
 
     # [MOTION] — temporal flow
     temporal_motion = _build_temporal_motion(scene)
@@ -152,7 +228,7 @@ def build_video_prompt(scene: Scene, character: Character | None = None,
         sections.append(f"[MOTION] {temporal_motion}")
 
     # [STYLE]
-    sections.append("[STYLE] Cinematic, intimate")
+    sections.append(f"[STYLE] Cinematic, intimate. {bg['ambient_depth']}")
 
     return ". ".join(sections) + "."
 
@@ -186,15 +262,20 @@ def build_pov_video_prompt(scene: Scene, character: Character,
 
     sections.append("[SPEECH] Talking directly to camera, eyes locked on camera lens, clear mouth articulation, natural lip movement")
 
-    # Light progression
+    # Light progression with micro-lighting shift
     lighting = scene.lighting
     if scenes and len(scenes) > 1 and scene_index > 0:
         lighting = _interpolate_lighting(scenes, scene_index)
+    bg = generate_background_elements(scene.location, scene.lighting)
     if lighting:
-        sections.append(f"[LIGHTING] {lighting}. Consistent lighting throughout")
+        sections.append(f"[LIGHTING] {lighting}. {bg['micro_lighting']}. Consistent lighting throughout")
+
+    # [BACKGROUND] — auto-generated cinematic elements
+    bg_moves = ", ".join(bg["background_movement"])
+    sections.append(f"[BACKGROUND] {bg_moves}. All background elements in soft bokeh blur")
 
     sections.append("[CAMERA] Phone camera perspective, slightly below eye level, subtle handheld wobble")
-    sections.append("[STYLE] Raw, intimate, cinematic")
+    sections.append(f"[STYLE] Raw, intimate, cinematic. {bg['ambient_depth']}")
 
     return ". ".join(sections) + "."
 

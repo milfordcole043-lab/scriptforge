@@ -219,7 +219,7 @@ def test_set_voice_profile_upsert(conn: sqlite3.Connection) -> None:
 def test_seed_defaults_rules(conn: sqlite3.Connection) -> None:
     db.seed_defaults(conn)
     rules = db.get_active_rules(conn)
-    assert len(rules) == 34
+    assert len(rules) == 37
 
 
 def test_seed_defaults_voice_profile(conn: sqlite3.Connection) -> None:
@@ -232,7 +232,7 @@ def test_seed_defaults_idempotent(conn: sqlite3.Connection) -> None:
     db.seed_defaults(conn)
     db.seed_defaults(conn)
     rules = db.get_active_rules(conn)
-    assert len(rules) == 34
+    assert len(rules) == 37
 
 
 # --- Render Log ---
