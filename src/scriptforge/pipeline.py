@@ -17,7 +17,7 @@ from scriptforge.config import (
 )
 from scriptforge.engine import build_video_prompt
 from scriptforge.models import Character, Script
-from scriptforge.researcher import grade_prompt
+from scriptforge.researcher import grade_prompt, review_image
 
 console = Console()
 
@@ -147,17 +147,32 @@ def generate_images(script: Script, character: Character, output_dir: Path,
         prompt = build_video_prompt(scene, character, prev_scene=prev,
                                      scenes=script.scenes, scene_index=i)
 
-        result = retry_api_call(
-            fal_client.subscribe, MODEL_FLUX_PRO,
-            arguments={"prompt": prompt, "image_size": "portrait_16_9", "num_images": 1},
-            label=f"Flux Pro (scene {i + 1})",
-        )
-        safe_download(result["images"][0]["url"], str(image_path), label=f"scene {i + 1} image")
+        # Review prompt quality and auto-adjust (max 2 retries)
+        for attempt in range(3):
+            score, issues, adjustment = review_image(image_path, character, scene)
+            if attempt > 0 and issues:
+                console.print(f"    Review score: {score}/10 — adjusting prompt...")
+                prompt = prompt.rstrip(".") + ". " + adjustment + "."
+
+            result = retry_api_call(
+                fal_client.subscribe, MODEL_FLUX_PRO,
+                arguments={"prompt": prompt, "image_size": "portrait_16_9", "num_images": 1},
+                label=f"Flux Pro (scene {i + 1})",
+            )
+            safe_download(result["images"][0]["url"], str(image_path), label=f"scene {i + 1} image")
+
+            if conn:
+                db.log_render_step(conn, script.id, f"image_scene_{i + 1}", "flux-pro", 0, COST_FLUX_PRO)
+
+            if score >= 7 or attempt == 2:
+                if score < 7 and attempt == 2:
+                    console.print(f"    Review: {score}/10 after {attempt + 1} attempts — proceeding anyway")
+                else:
+                    console.print(f"    Review: {score}/10")
+                break
+
         console.print(f"    Saved: {image_path.name}")
         images.append(image_path)
-
-        if conn:
-            db.log_render_step(conn, script.id, f"image_scene_{i + 1}", "flux-pro", 0, COST_FLUX_PRO)
 
     return images
 

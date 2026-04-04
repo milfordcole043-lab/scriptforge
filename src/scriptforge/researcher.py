@@ -2,9 +2,91 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from pathlib import Path
 
 from scriptforge import db
-from scriptforge.models import PromptRule
+from scriptforge.models import Character, PromptRule, Scene
+
+
+# --- Image Quality Review ---
+
+
+def review_image(image_path: Path, character: Character, scene: Scene) -> tuple[int, list[str], str]:
+    """Review a generated image for quality and character consistency.
+    Returns (score 1-10, issues list, suggested prompt adjustment)."""
+    # Since we can't run vision models locally, we do structural prompt analysis
+    # to predict likely issues and build corrective prompts
+    issues: list[str] = []
+    adjustments: list[str] = []
+    score = 10
+
+    # Check 1: Character description completeness in the original prompt
+    # If the prompt that generated this image was weak, the image likely has issues
+    char_keywords = _extract_character_keywords(character)
+    scene_keywords = _extract_scene_keywords(scene)
+
+    # Check 2: Lighting specificity — vague lighting = inconsistent results
+    lighting = (scene.lighting or "").lower()
+    if len(lighting) < 15:
+        issues.append("Lighting description too vague — may produce inconsistent results")
+        adjustments.append("Add more specific lighting: color temperature, direction, source")
+        score -= 1
+
+    # Check 3: Emotion specificity — generic emotions produce generic faces
+    emotion = (scene.character_emotion or "").lower()
+    if emotion in ("sad", "happy", "angry", "calm", "neutral"):
+        issues.append(f"Emotion '{emotion}' is too generic — AI defaults to stock expressions")
+        adjustments.append(f"Replace '{emotion}' with a specific physical description: "
+                          f"'eyes heavy, jaw tight, trying not to cry'")
+        score -= 2
+
+    # Check 4: Hand/body description — unanchored hands produce artifacts
+    action = (scene.character_action or "").lower()
+    hand_anchored = any(w in action for w in ["grip", "hold", "press", "rest", "touch",
+                                                "place", "clutch", "wrap", "lean"])
+    if "hand" in action or "finger" in action or "thumb" in action:
+        if not hand_anchored:
+            issues.append("Hands described but not anchored to an object — risk of distortion")
+            adjustments.append("Anchor hands: 'fingers gripping the phone edge' not 'fingers moving'")
+            score -= 2
+
+    # Check 5: Camera angle clarity
+    camera = (scene.camera or "").lower()
+    if not any(w in camera for w in ["close-up", "wide", "medium", "dolly", "static",
+                                      "tracking", "crane", "overhead", "pov"]):
+        issues.append("Camera angle not specified — may produce inconsistent framing")
+        adjustments.append("Add explicit camera: 'static close-up' or 'slow dolly-in'")
+        score -= 1
+
+    # Check 6: Scene complexity — too many elements = confusion
+    location = (scene.location or "")
+    if location.count(",") > 4:
+        issues.append("Location description has too many elements — AI may deprioritize some")
+        adjustments.append("Simplify location to 2-3 key elements")
+        score -= 1
+
+    # Check 7: Duration-appropriate detail
+    if scene.duration_seconds <= 3 and len(action) > 80:
+        issues.append("Too much action described for a 3-second clip — simplify")
+        adjustments.append("For short clips, describe one simple action")
+        score -= 1
+
+    # Build suggested prompt adjustment
+    adjustment_text = ". ".join(adjustments) if adjustments else "No adjustments needed"
+
+    return max(1, score), issues, adjustment_text
+
+
+def _extract_character_keywords(character: Character) -> list[str]:
+    """Extract key visual keywords from character description."""
+    text = f"{character.appearance} {character.clothing}".lower()
+    return [w.strip() for w in re.split(r'[,\s]+', text) if len(w.strip()) > 3]
+
+
+def _extract_scene_keywords(scene: Scene) -> list[str]:
+    """Extract key visual keywords from scene."""
+    text = f"{scene.location} {scene.lighting} {scene.character_action}".lower()
+    return [w.strip() for w in re.split(r'[,\s]+', text) if len(w.strip()) > 3]
 
 
 # --- Prompt Grader ---

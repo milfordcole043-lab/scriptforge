@@ -135,19 +135,24 @@ def build_pov_video_prompt(scene: Scene, character: Character,
     return ". ".join(sections) + "."
 
 
-def build_pov_reference_prompt(character: Character, lighting: str = "") -> str:
-    """Build a Flux Pro prompt for a POV selfie reference portrait."""
+def build_pov_reference_prompt(character: Character, lighting: str = "",
+                                hook_emotion: str = "") -> str:
+    """Build a Flux Pro prompt for a POV selfie reference portrait with emotional state."""
     parts = [
-        f"Close-up portrait of a {character.gender} in {character.age} "
-        f"with {character.appearance}, wearing {character.clothing}",
-        "Slight smile with teeth visible, natural expression",
-        "Selfie angle, phone camera perspective, slightly below eye level",
+        f"A {character.gender} in {character.age} with {character.appearance}, "
+        f"wearing {character.clothing}",
     ]
+    # Emotional state from hook scene — far more important than generic smile
+    if hook_emotion:
+        parts.append(f"{hook_emotion}, lips slightly parted showing teeth")
+    else:
+        parts.append("Exhausted expression, lips slightly parted showing teeth, eyes heavy and tired")
+    parts.append("Holding phone in selfie position")
     if lighting:
         parts.append(lighting)
     else:
         parts.append("Soft warm lighting")
-    parts.append("Natural, unposed, cinematic portrait. Consistent lighting throughout")
+    parts.append("Selfie camera angle, slightly below eye level. Unposed, raw, candid. Shot on phone camera. Consistent lighting throughout")
     return ". ".join(parts) + "."
 
 

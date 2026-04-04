@@ -17,6 +17,7 @@ from scriptforge.config import (
 )
 from scriptforge.engine import build_pov_reference_prompt, build_pov_video_prompt
 from scriptforge.models import Character, Script
+from scriptforge.researcher import review_image
 
 console = Console()
 
@@ -60,14 +61,16 @@ def render_pov(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = Fals
     chunks = split_audio_by_scenes(voiceover, script, output_dir)
 
     # Step 3: Generate POV reference portrait (cached)
-    first_lighting = script.scenes[0].lighting if script.scenes else ""
+    first_scene = script.scenes[0] if script.scenes else None
+    first_lighting = first_scene.lighting if first_scene else ""
+    hook_emotion = first_scene.character_emotion if first_scene else ""
     ref_path = output_dir / "images" / "pov_reference.png"
     if ref_path.exists():
         console.print("[bold cyan]Step 3/6:[/bold cyan] POV reference portrait cached, skipping.")
         ref_image = ref_path
     else:
         console.print("[bold cyan]Step 3/6:[/bold cyan] Generating POV reference portrait...")
-        ref_image = generate_pov_reference(character, first_lighting, output_dir, conn, script_id)
+        ref_image = generate_pov_reference(character, first_lighting, hook_emotion, output_dir, conn, script_id)
 
     # Step 4: Generate lip-sync clips
     console.print("[bold cyan]Step 4/6:[/bold cyan] Generating lip-sync video clips...")
@@ -167,10 +170,11 @@ def split_audio_by_scenes(voiceover: Path, script: Script, output_dir: Path) -> 
     return chunks
 
 
-def generate_pov_reference(character: Character, lighting: str, output_dir: Path,
+def generate_pov_reference(character: Character, lighting: str, hook_emotion: str,
+                            output_dir: Path,
                             conn: sqlite3.Connection | None = None,
                             script_id: int = 0) -> Path:
-    """Generate a POV selfie reference portrait via Flux Pro."""
+    """Generate a POV selfie reference portrait via Flux Pro with emotional state."""
     import fal_client
 
     os.environ["FAL_KEY"] = FAL_KEY
@@ -180,19 +184,36 @@ def generate_pov_reference(character: Character, lighting: str, output_dir: Path
         console.print(f"    Cached: {ref_path.name}")
         return ref_path
 
-    prompt = build_pov_reference_prompt(character, lighting)
+    prompt = build_pov_reference_prompt(character, lighting, hook_emotion)
 
-    result = retry_api_call(
-        fal_client.subscribe, MODEL_FLUX_PRO,
-        arguments={"prompt": prompt, "image_size": "portrait_16_9", "num_images": 1},
-        label="Flux Pro (POV reference)",
-    )
-    safe_download(result["images"][0]["url"], str(ref_path), label="POV reference")
+    # Create a synthetic hook scene for review
+    from scriptforge.models import Scene
+    hook_scene = Scene(beat="hook", voiceover="", character_action="holding phone in selfie position",
+                       location="dark bedroom", character_emotion=hook_emotion or "exhausted",
+                       camera="static close-up", lighting=lighting or "soft warm lighting",
+                       motion="still", sound="silence", caption="REF", duration_seconds=3)
+
+    for attempt in range(3):
+        score, issues, adjustment = review_image(ref_path, character, hook_scene)
+        if attempt > 0 and issues:
+            console.print(f"    Review score: {score}/10 — adjusting prompt...")
+            prompt = prompt.rstrip(".") + ". " + adjustment + "."
+
+        result = retry_api_call(
+            fal_client.subscribe, MODEL_FLUX_PRO,
+            arguments={"prompt": prompt, "image_size": "portrait_16_9", "num_images": 1},
+            label="Flux Pro (POV reference)",
+        )
+        safe_download(result["images"][0]["url"], str(ref_path), label="POV reference")
+
+        if conn and script_id:
+            db.log_render_step(conn, script_id, "pov_reference", "flux-pro", 0, COST_FLUX_PRO)
+
+        if score >= 7 or attempt == 2:
+            console.print(f"    Review: {score}/10")
+            break
+
     console.print(f"    Saved: {ref_path.name}")
-
-    if conn and script_id:
-        db.log_render_step(conn, script_id, "pov_reference", "flux-pro", 0, COST_FLUX_PRO)
-
     return ref_path
 
 

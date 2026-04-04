@@ -3,14 +3,29 @@ from __future__ import annotations
 import sqlite3
 from unittest.mock import patch
 
+from pathlib import Path
+
 from scriptforge import db
-from scriptforge.models import PromptRule
-from scriptforge.researcher import grade_prompt, extract_findings_from_text, _enhance_prompt
+from scriptforge.models import Character, PromptRule, Scene
+from scriptforge.researcher import grade_prompt, extract_findings_from_text, _enhance_prompt, review_image
 
 
 def _seed_rules(conn: sqlite3.Connection) -> list[PromptRule]:
     db.seed_defaults(conn)
     return db.get_prompt_rules(conn)
+
+
+_TEST_CHAR = Character(id=1, name="Maya", age="late 20s", gender="female",
+                       appearance="dark wavy hair", clothing="grey hoodie", created_at=None)
+
+
+def _test_scene(emotion: str = "desperate longing, eyes heavy", camera: str = "static close-up",
+                lighting: str = "cold blue phone screen on face",
+                action: str = "fingers gripping phone edge") -> Scene:
+    return Scene(beat="hook", voiceover="V", character_action=action,
+                 location="dark bedroom, messy sheets", character_emotion=emotion,
+                 camera=camera, lighting=lighting, motion="thumb trembles",
+                 sound="silence", caption="CAP", duration_seconds=5)
 
 
 # --- Prompt Grading ---
@@ -160,3 +175,45 @@ def test_pull_transcript_bad_url() -> None:
     from scriptforge.researcher import pull_youtube_transcript
     result = pull_youtube_transcript("not-a-url")
     assert result is None
+
+
+# --- Image Quality Review ---
+
+
+def test_review_good_scene() -> None:
+    scene = _test_scene()
+    score, issues, adj = review_image(Path("fake.png"), _TEST_CHAR, scene)
+    assert score >= 7
+    assert len(issues) == 0
+
+
+def test_review_generic_emotion() -> None:
+    scene = _test_scene(emotion="sad")
+    score, issues, adj = review_image(Path("fake.png"), _TEST_CHAR, scene)
+    assert score < 10
+    assert any("generic" in i.lower() for i in issues)
+
+
+def test_review_unanchored_hands() -> None:
+    scene = _test_scene(action="hands moving in empty space")
+    score, issues, adj = review_image(Path("fake.png"), _TEST_CHAR, scene)
+    assert any("anchor" in i.lower() for i in issues)
+
+
+def test_review_missing_camera() -> None:
+    scene = _test_scene(camera="")
+    score, issues, adj = review_image(Path("fake.png"), _TEST_CHAR, scene)
+    assert any("camera" in i.lower() for i in issues)
+
+
+def test_review_vague_lighting() -> None:
+    scene = _test_scene(lighting="light")
+    score, issues, adj = review_image(Path("fake.png"), _TEST_CHAR, scene)
+    assert any("lighting" in i.lower() for i in issues)
+
+
+def test_review_returns_adjustment() -> None:
+    scene = _test_scene(emotion="sad", camera="", lighting="dim")
+    score, issues, adj = review_image(Path("fake.png"), _TEST_CHAR, scene)
+    assert len(adj) > 0
+    assert adj != "No adjustments needed"

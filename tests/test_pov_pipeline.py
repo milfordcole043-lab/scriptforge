@@ -117,22 +117,33 @@ def test_pov_video_prompt() -> None:
     assert "Consistent lighting" in prompt
 
 
-def test_pov_reference_prompt() -> None:
+def test_pov_reference_prompt_with_emotion() -> None:
     char = Character(id=1, name="Maya", age="late 20s", gender="female",
                      appearance="dark wavy hair, brown skin",
                      clothing="grey hoodie", created_at=None)
-    prompt = build_pov_reference_prompt(char, "cold blue phone screen")
-    assert "teeth visible" in prompt.lower()
+    prompt = build_pov_reference_prompt(char, "cold blue phone screen",
+                                        "exhausted, eyes heavy, like she has been crying")
+    assert "teeth" in prompt.lower()
     assert "selfie" in prompt.lower()
-    assert "phone camera" in prompt.lower()
+    assert "exhausted" in prompt.lower()
     assert "dark wavy hair" in prompt
+
+
+def test_pov_reference_prompt_default_emotion() -> None:
+    char = Character(id=1, name="Maya", age="late 20s", gender="female",
+                     appearance="dark hair", clothing="hoodie", created_at=None)
+    prompt = build_pov_reference_prompt(char)
+    # No hook_emotion provided — should use default exhausted expression
+    assert "exhausted" in prompt.lower()
+    assert "Soft warm lighting" in prompt
 
 
 def test_pov_reference_prompt_default_lighting() -> None:
     char = Character(id=1, name="Maya", age="late 20s", gender="female",
                      appearance="dark hair", clothing="hoodie", created_at=None)
-    prompt = build_pov_reference_prompt(char)
+    prompt = build_pov_reference_prompt(char, hook_emotion="tired and drained")
     assert "Soft warm lighting" in prompt
+    assert "tired" in prompt.lower()
 
 
 # --- ASS subtitle formatting ---
