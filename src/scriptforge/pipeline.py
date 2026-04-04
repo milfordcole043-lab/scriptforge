@@ -149,7 +149,9 @@ def generate_images(script: Script, character: Character, output_dir: Path,
             continue
 
         console.print(f"  Scene {i + 1}/{len(script.scenes)} [{scene.beat}]: generating image...")
-        prompt = build_video_prompt(scene, character)
+        prev = script.scenes[i - 1] if i > 0 else None
+        prompt = build_video_prompt(scene, character, prev_scene=prev,
+                                     scenes=script.scenes, scene_index=i)
 
         result = retry_api_call(
             fal_client.subscribe, "fal-ai/flux-pro/v1.1",
@@ -185,7 +187,9 @@ def generate_clips(script: Script, character: Character, images: list[Path],
             continue
 
         duration = str(max(3, min(15, scene.duration_seconds)))
-        video_prompt = build_video_prompt(scene, character)
+        prev = script.scenes[i - 1] if i > 0 else None
+        video_prompt = build_video_prompt(scene, character, prev_scene=prev,
+                                           scenes=script.scenes, scene_index=i)
 
         if prompt_rules:
             score, missing, enhanced = grade_prompt(video_prompt, prompt_rules)
