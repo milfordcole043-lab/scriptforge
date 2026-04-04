@@ -144,6 +144,37 @@ class PromptRule:
     active: bool = True
 
 
+@dataclass
+class SceneReview:
+    scene_index: int
+    score: int
+    issues: list[str] = field(default_factory=list)
+    suggestions: list[str] = field(default_factory=list)
+
+
+@dataclass
+class VideoReview:
+    script_id: int
+    scene_reviews: list[SceneReview]
+    overall_score: float
+    sync_issues: list[str] = field(default_factory=list)
+    rerender_needed: list[int] = field(default_factory=list)
+    created_at: datetime | None = None
+
+
+@dataclass
+class SceneFeedback:
+    id: int
+    script_id: int
+    scene_index: int
+    visual_quality: int
+    emotional_impact: int
+    pacing: int
+    lip_sync: int | None = None
+    notes: str = ""
+    created_at: datetime | None = None
+
+
 def validate_script(scenes: list[Scene], full_script: str) -> list[str]:
     """Validate a script against narrative arc rules. Returns list of errors."""
     errors: list[str] = []

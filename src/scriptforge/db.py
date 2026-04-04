@@ -5,8 +5,8 @@ from datetime import datetime
 from pathlib import Path
 
 from scriptforge.models import (
-    Character, FeedbackEntry, Finding, Hook, PromptRule, Rule, Scene, Script,
-    VoiceProfile, validate_script,
+    Character, FeedbackEntry, Finding, Hook, PromptRule, Rule, Scene,
+    SceneFeedback, SceneReview, Script, VideoReview, VoiceProfile, validate_script,
 )
 
 DEFAULT_DB = Path.home() / ".scriptforge" / "scriptforge.db"
@@ -138,6 +138,34 @@ CREATE TABLE IF NOT EXISTS render_log (
 );
 """
 
+_CREATE_VIDEO_REVIEWS = """
+CREATE TABLE IF NOT EXISTS video_reviews (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    script_id   INTEGER NOT NULL,
+    scene_index INTEGER NOT NULL,
+    score       INTEGER NOT NULL,
+    issues      TEXT    DEFAULT '[]',
+    suggestions TEXT    DEFAULT '[]',
+    created_at  TEXT    NOT NULL,
+    FOREIGN KEY (script_id) REFERENCES scripts(id)
+);
+"""
+
+_CREATE_SCENE_FEEDBACK = """
+CREATE TABLE IF NOT EXISTS scene_feedback (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    script_id        INTEGER NOT NULL,
+    scene_index      INTEGER NOT NULL,
+    visual_quality   INTEGER NOT NULL,
+    emotional_impact INTEGER NOT NULL,
+    pacing           INTEGER NOT NULL,
+    lip_sync         INTEGER,
+    notes            TEXT    DEFAULT '',
+    created_at       TEXT    NOT NULL,
+    FOREIGN KEY (script_id) REFERENCES scripts(id)
+);
+"""
+
 _DEFAULT_PROMPT_RULES = [
     ("subject", "describe one primary subject per scene, be specific about appearance", 9),
     ("camera", "always specify camera movement -- tracking, dolly, crane, static, handheld", 8),
@@ -211,6 +239,8 @@ def connect(db_path: Path = DEFAULT_DB) -> sqlite3.Connection:
     conn.execute(_CREATE_PROMPT_RULES)
     conn.execute(_CREATE_CHARACTER_PROFILES)
     conn.execute(_CREATE_RENDER_LOG)
+    conn.execute(_CREATE_VIDEO_REVIEWS)
+    conn.execute(_CREATE_SCENE_FEEDBACK)
     _migrate(conn)
     conn.commit()
     return conn
@@ -676,6 +706,114 @@ def get_render_cost(conn: sqlite3.Connection, script_id: int) -> float:
         (script_id,),
     ).fetchone()
     return row[0]
+
+
+# --- Video Reviews ---
+
+
+def save_video_review(conn: sqlite3.Connection, review: VideoReview) -> None:
+    now = datetime.now().isoformat()
+    for sr in review.scene_reviews:
+        import json
+        conn.execute(
+            "INSERT INTO video_reviews (script_id, scene_index, score, issues, suggestions, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (review.script_id, sr.scene_index, sr.score,
+             json.dumps(sr.issues), json.dumps(sr.suggestions), now),
+        )
+    conn.commit()
+
+
+def get_video_reviews(conn: sqlite3.Connection, script_id: int) -> list[dict]:
+    import json
+    rows = conn.execute(
+        "SELECT scene_index, score, issues, suggestions, created_at FROM video_reviews "
+        "WHERE script_id = ? ORDER BY created_at DESC, scene_index",
+        (script_id,),
+    ).fetchall()
+    return [{"scene_index": r[0], "score": r[1], "issues": json.loads(r[2]),
+             "suggestions": json.loads(r[3]), "created_at": r[4]} for r in rows]
+
+
+# --- Scene Feedback ---
+
+
+def save_scene_feedback(conn: sqlite3.Connection, script_id: int, scene_index: int,
+                         visual_quality: int, emotional_impact: int, pacing: int,
+                         lip_sync: int | None = None, notes: str = "") -> SceneFeedback:
+    now = datetime.now().isoformat()
+    cur = conn.execute(
+        "INSERT INTO scene_feedback (script_id, scene_index, visual_quality, emotional_impact, "
+        "pacing, lip_sync, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (script_id, scene_index, visual_quality, emotional_impact, pacing, lip_sync, notes, now),
+    )
+    conn.commit()
+    return SceneFeedback(id=cur.lastrowid, script_id=script_id, scene_index=scene_index,
+                         visual_quality=visual_quality, emotional_impact=emotional_impact,
+                         pacing=pacing, lip_sync=lip_sync, notes=notes,
+                         created_at=datetime.fromisoformat(now))
+
+
+def get_scene_feedback(conn: sqlite3.Connection, script_id: int) -> list[SceneFeedback]:
+    rows = conn.execute(
+        "SELECT id, script_id, scene_index, visual_quality, emotional_impact, pacing, "
+        "lip_sync, notes, created_at FROM scene_feedback WHERE script_id = ? ORDER BY scene_index",
+        (script_id,),
+    ).fetchall()
+    return [SceneFeedback(id=r[0], script_id=r[1], scene_index=r[2], visual_quality=r[3],
+                          emotional_impact=r[4], pacing=r[5], lip_sync=r[6], notes=r[7],
+                          created_at=datetime.fromisoformat(r[8])) for r in rows]
+
+
+def analyze_scene_feedback(conn: sqlite3.Connection) -> dict:
+    """Analyze patterns across all scene feedback. Returns insights dict."""
+    rows = conn.execute(
+        "SELECT sf.scene_index, sf.visual_quality, sf.emotional_impact, sf.pacing, "
+        "sf.lip_sync, s.scenes, s.mode "
+        "FROM scene_feedback sf JOIN scripts s ON sf.script_id = s.id",
+    ).fetchall()
+
+    if len(rows) < 5:
+        return {"patterns": [], "total_feedback": len(rows)}
+
+    # Cross-reference with scene attributes
+    import json
+    beat_scores: dict[str, list[float]] = {}
+    camera_scores: dict[str, list[float]] = {}
+    duration_scores: dict[str, list[float]] = {}
+
+    for r in rows:
+        idx, vis, emo, pace, lip, scenes_json, mode = r
+        scenes = json.loads(scenes_json)
+        if idx < len(scenes):
+            scene = scenes[idx]
+            avg = (vis + emo + pace) / 3.0
+            beat = scene.get("beat", "unknown")
+            camera = scene.get("camera", "unknown")
+            dur = scene.get("duration_seconds", 0)
+
+            beat_scores.setdefault(beat, []).append(avg)
+            camera_scores.setdefault(camera, []).append(avg)
+            dur_bucket = "short (3-5s)" if dur <= 5 else "medium (6-10s)" if dur <= 10 else "long (11s+)"
+            duration_scores.setdefault(dur_bucket, []).append(avg)
+
+    patterns = []
+    for beat, scores in sorted(beat_scores.items()):
+        if len(scores) >= 2:
+            avg = sum(scores) / len(scores)
+            patterns.append(f"{beat} scenes average {avg:.1f}/5 ({len(scores)} samples)")
+
+    for camera, scores in sorted(camera_scores.items()):
+        if len(scores) >= 2:
+            avg = sum(scores) / len(scores)
+            patterns.append(f"'{camera}' camera averages {avg:.1f}/5 ({len(scores)} samples)")
+
+    for bucket, scores in sorted(duration_scores.items()):
+        if len(scores) >= 2:
+            avg = sum(scores) / len(scores)
+            patterns.append(f"{bucket} scenes average {avg:.1f}/5 ({len(scores)} samples)")
+
+    return {"patterns": patterns, "total_feedback": len(rows)}
 
 
 # --- Internal ---

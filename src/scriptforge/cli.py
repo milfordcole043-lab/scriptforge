@@ -179,13 +179,146 @@ def list_cmd(ctx: click.Context) -> None:
 @click.argument("notes")
 @click.pass_context
 def rate(ctx: click.Context, script_id: int, rating: str, notes: str) -> None:
-    """Rate a script and log feedback."""
+    """Rate a script (quick mode). For scene-by-scene feedback, use 'scriptforge feedback-rate'."""
     conn = _get_conn(ctx)
     if db.rate_script(conn, script_id, rating, notes):
         color = "green" if rating == "hit" else "red" if rating == "miss" else "yellow"
         console.print(f"[{color}]Rated #{script_id} as {rating}.[/{color}] Feedback logged.")
     else:
         console.print(f"[red]Script #{script_id} not found.[/red]")
+
+
+@cli.command("feedback-rate")
+@click.argument("script_id", type=int)
+@click.pass_context
+def feedback_rate(ctx: click.Context, script_id: int) -> None:
+    """Rate a script scene-by-scene with granular feedback."""
+    conn = _get_conn(ctx)
+    script = db.get_script(conn, script_id)
+    if not script:
+        console.print(f"[red]Script #{script_id} not found.[/red]")
+        return
+
+    console.print(f"\n[bold]Rating script #{script_id}: {script.topic}[/bold]\n")
+    is_pov = script.mode == "pov"
+    all_scores: list[float] = []
+
+    for i, scene in enumerate(script.scenes):
+        console.print(f"[bold cyan]Scene {i + 1}[/bold cyan] [{scene.beat}] — {scene.caption}")
+        console.print(f"  Action: {scene.character_action[:60]}")
+        console.print(f"  Duration: {scene.duration_seconds}s")
+
+        vis = click.prompt("  Visual quality (1-5)", type=click.IntRange(1, 5))
+        emo = click.prompt("  Emotional impact (1-5)", type=click.IntRange(1, 5))
+        pace = click.prompt("  Pacing (1-5)", type=click.IntRange(1, 5))
+        lip = None
+        if is_pov:
+            lip = click.prompt("  Lip sync quality (1-5)", type=click.IntRange(1, 5))
+
+        notes = click.prompt("  Notes (optional)", default="", show_default=False)
+
+        db.save_scene_feedback(conn, script_id, i, vis, emo, pace, lip, notes)
+        avg = (vis + emo + pace + (lip or 0)) / (4 if lip else 3)
+        all_scores.append(avg)
+        console.print(f"  [dim]Scene {i + 1} average: {avg:.1f}/5[/dim]\n")
+
+    overall = sum(all_scores) / len(all_scores) if all_scores else 0
+    overall_notes = click.prompt("Overall notes", default="", show_default=False)
+
+    # Map to hit/miss/rewrite for backward compatibility
+    if overall >= 4:
+        auto_rating = "hit"
+    elif overall >= 2.5:
+        auto_rating = "rewrite"
+    else:
+        auto_rating = "miss"
+
+    db.rate_script(conn, script_id, auto_rating,
+                   f"Scene-level avg: {overall:.1f}/5. {overall_notes}")
+
+    color = "green" if auto_rating == "hit" else "yellow" if auto_rating == "rewrite" else "red"
+    console.print(f"\n[{color}]Overall: {overall:.1f}/5 ({auto_rating})[/{color}]")
+    console.print(f"[green]Scene feedback saved for all {len(script.scenes)} scenes.[/green]\n")
+
+
+@cli.command()
+@click.argument("script_id", type=int)
+@click.pass_context
+def feedback(ctx: click.Context, script_id: int) -> None:
+    """View scene-level feedback for a script."""
+    conn = _get_conn(ctx)
+    entries = db.get_scene_feedback(conn, script_id)
+    if not entries:
+        console.print(f"[dim]No scene feedback for script #{script_id}.[/dim]")
+        return
+
+    table = Table(title=f"Scene Feedback — Script #{script_id}")
+    table.add_column("#", style="dim")
+    table.add_column("Visual")
+    table.add_column("Emotion")
+    table.add_column("Pacing")
+    table.add_column("Lip Sync")
+    table.add_column("Notes")
+    for sf in entries:
+        lip_str = str(sf.lip_sync) if sf.lip_sync else "-"
+        table.add_row(str(sf.scene_index + 1), str(sf.visual_quality), str(sf.emotional_impact),
+                       str(sf.pacing), lip_str, sf.notes[:40])
+    console.print(table)
+
+
+@cli.command()
+@click.argument("script_id", type=int)
+@click.pass_context
+def review(ctx: click.Context, script_id: int) -> None:
+    """Run vision review on a rendered script."""
+    conn = _get_conn(ctx)
+    script = db.get_script(conn, script_id)
+    if not script:
+        console.print(f"[red]Script #{script_id} not found.[/red]")
+        return
+
+    character = None
+    if script.character_id:
+        character = db.get_character(conn, script.character_id)
+    if not character:
+        console.print("[red]No character linked to this script.[/red]")
+        return
+
+    from scriptforge.config import ANTHROPIC_API_KEY, OUTPUT_DIR
+    if not ANTHROPIC_API_KEY:
+        console.print("[red]ANTHROPIC_API_KEY not set in .env[/red]")
+        return
+
+    output_dir = OUTPUT_DIR / str(script_id)
+    if not (output_dir / "final.mp4").exists():
+        console.print(f"[red]No rendered video found at {output_dir}/final.mp4[/red]")
+        return
+
+    from scriptforge.vision_reviewer import review_rendered_video, print_review
+    rev = review_rendered_video(script, character, output_dir, conn)
+    print_review(rev)
+
+
+@cli.command()
+@click.pass_context
+def reviews(ctx: click.Context) -> None:
+    """Show all past video reviews."""
+    conn = _get_conn(ctx)
+    # Get distinct script_ids from video_reviews
+    rows = conn.execute(
+        "SELECT DISTINCT script_id FROM video_reviews ORDER BY script_id",
+    ).fetchall()
+    if not rows:
+        console.print("[dim]No video reviews yet.[/dim]")
+        return
+
+    for (sid,) in rows:
+        reviews_data = db.get_video_reviews(conn, sid)
+        if reviews_data:
+            scores = [r["score"] for r in reviews_data]
+            avg = sum(scores) / len(scores) if scores else 0
+            color = "green" if avg >= 7 else "yellow" if avg >= 5 else "red"
+            console.print(f"  Script #{sid}: [{color}]{avg:.1f}/10[/{color}] ({len(scores)} scenes reviewed)")
 
 
 # --- rewrite ---

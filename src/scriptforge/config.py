@@ -15,6 +15,7 @@ load_dotenv(_ENV_PATH)
 # --- API keys ---
 ELEVENLABS_API_KEY: str = os.environ.get("ELEVENLABS_API_KEY", "")
 FAL_KEY: str = os.environ.get("FAL_KEY", "")
+ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
 
 # --- Paths ---
 OUTPUT_DIR: Path = Path(__file__).resolve().parent.parent.parent / "output"
@@ -36,6 +37,7 @@ COST_FABRIC: float = 0.15         # per second at 720p
 
 # --- Video generation ---
 KLING_NEGATIVE: str = "blur, flickering, morphing faces, distorted hands, text, watermark, low quality, jittery motion"
+COST_CLAUDE_VISION: float = 0.01  # per image review estimate
 WPM: int = 130  # words per minute for voiceover pacing
 
 console = Console()

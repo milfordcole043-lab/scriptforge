@@ -84,6 +84,14 @@ def _render_narrator(conn: sqlite3.Connection, script: Script, *, dry_run: bool 
     console.print("[bold cyan]Step 5/6:[/bold cyan] Assembling final video...")
     final = assemble_video(captioned, voiceover, output_dir)
 
+    # Auto-review rendered output
+    from scriptforge.config import ANTHROPIC_API_KEY
+    if ANTHROPIC_API_KEY:
+        console.print("[bold cyan]Reviewing render...[/bold cyan]")
+        from scriptforge.vision_reviewer import review_rendered_video, print_review
+        review = review_rendered_video(script, character, output_dir, conn)
+        print_review(review)
+
     total_cost = db.get_render_cost(conn, script.id)
     console.print(f"\n[bold green]Done![/bold green] Video saved to: {final}")
     console.print(f"[bold]Total estimated cost: ${total_cost:.2f}[/bold]")

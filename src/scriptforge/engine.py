@@ -199,11 +199,13 @@ def build_write_context(
     top_hooks = db.get_top_hooks(conn, limit=10)
     patterns = analyze_feedback_patterns(conn)
     voice_profile = db.get_voice_profile(conn)
+    scene_patterns = db.analyze_scene_feedback(conn)
 
     # Mode-aware voice profile filtering
     filtered_profile = _filter_voice_profile(voice_profile, mode)
 
-    prompt = _build_write_prompt(topic, style, duration_target, rules, top_hooks, patterns, filtered_profile, mode)
+    prompt = _build_write_prompt(topic, style, duration_target, rules, top_hooks, patterns,
+                                  filtered_profile, mode, scene_patterns)
 
     return {
         "topic": topic,
@@ -312,6 +314,7 @@ def _build_write_prompt(
     patterns: dict,
     voice_profile: list,
     mode: str = "narrator",
+    scene_patterns: dict | None = None,
 ) -> str:
     """Build the full prompt for writing a new script."""
     wpm = WPM
@@ -367,6 +370,11 @@ def _build_write_prompt(
         sections.append("\n--- WHAT TO AVOID (from past misses) ---")
         for note in patterns["miss_notes"][:5]:
             sections.append(f"- {note}")
+
+    if scene_patterns and scene_patterns.get("patterns"):
+        sections.append("\n--- DATA-DRIVEN INSIGHTS (from scene-level feedback) ---")
+        for p in scene_patterns["patterns"][:8]:
+            sections.append(f"- {p}")
 
     return "\n".join(sections)
 
