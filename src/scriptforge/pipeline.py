@@ -22,7 +22,8 @@ from scriptforge.researcher import grade_prompt, review_image
 console = Console()
 
 
-def render_script(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = False) -> Path | None:
+def render_script(conn: sqlite3.Connection, script_id: int, *,
+                  dry_run: bool = False, engine: str = "kling") -> Path | None:
     """Route to the correct pipeline based on script mode."""
     script = db.get_script(conn, script_id)
     if not script:
@@ -31,7 +32,7 @@ def render_script(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = F
 
     if script.mode == "pov":
         from scriptforge.pov_pipeline import render_pov
-        return render_pov(conn, script_id, dry_run=dry_run)
+        return render_pov(conn, script_id, dry_run=dry_run, engine=engine)
 
     return _render_narrator(conn, script, dry_run=dry_run)
 

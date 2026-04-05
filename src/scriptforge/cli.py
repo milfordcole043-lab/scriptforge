@@ -613,11 +613,13 @@ def analyze(ctx: click.Context) -> None:
 @cli.command()
 @click.argument("script_id", type=int)
 @click.option("--dry-run", is_flag=True, help="Show render plan without calling APIs.")
+@click.option("--engine", type=click.Choice(["kling", "fabric"]), default="kling",
+              help="POV engine: kling (two-pass, default) or fabric (legacy).")
 @click.pass_context
-def render(ctx: click.Context, script_id: int, dry_run: bool) -> None:
+def render(ctx: click.Context, script_id: int, dry_run: bool, engine: str) -> None:
     """Render a script into a finished video."""
     conn = _get_conn(ctx)
-    render_script(conn, script_id, dry_run=dry_run)
+    render_script(conn, script_id, dry_run=dry_run, engine=engine)
 
 
 # --- character ---

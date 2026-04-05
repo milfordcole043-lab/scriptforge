@@ -252,7 +252,7 @@ def build_pov_video_prompt(scene: Scene, character: Character,
                            scenes: list[Scene] | None = None,
                            scene_index: int = 0,
                            outfit_override: str | None = None) -> str:
-    """Build a POV lip-sync video prompt for VEED Fabric with connectivity."""
+    """Build a POV video prompt with full cinematic movement for Kling two-pass pipeline."""
     sections = []
 
     if scene.location:
@@ -299,6 +299,11 @@ def build_pov_video_prompt(scene: Scene, character: Character,
     # [BACKGROUND] — auto-generated cinematic elements
     bg_moves = ", ".join(bg["background_movement"])
     sections.append(f"[BACKGROUND] {bg_moves}. All background elements in out-of-focus bokeh, f/2.0 depth of field, subject in sharp focus")
+
+    # [MOTION] — full movement now supported via Kling
+    temporal_motion = _build_temporal_motion(scene)
+    if temporal_motion:
+        sections.append(f"[MOTION] {temporal_motion}")
 
     sections.append("[CAMERA] Phone camera perspective, slightly below eye level, subtle handheld wobble")
     sections.append(f"[STYLE] Raw, intimate, cinematic, shallow depth of field, natural skin texture, no airbrushing. {bg['ambient_depth']}")

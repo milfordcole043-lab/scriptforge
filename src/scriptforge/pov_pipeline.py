@@ -11,8 +11,9 @@ from rich.table import Table
 
 from scriptforge import db
 from scriptforge.config import (
-    COST_ELEVENLABS, COST_FABRIC, COST_FLUX_PRO,
-    ELEVENLABS_API_KEY, FAL_KEY, MODEL_FABRIC, MODEL_FLUX_PRO,
+    COST_ELEVENLABS, COST_FABRIC, COST_FLUX_PRO, COST_KLING_LIPSYNC, COST_KLING_V3,
+    ELEVENLABS_API_KEY, FAL_KEY,
+    KLING_NEGATIVE, MODEL_FABRIC, MODEL_FLUX_PRO, MODEL_KLING_LIPSYNC, MODEL_KLING_V3,
     OUTPUT_DIR, VOICE_POV,
     retry_api_call, safe_download,
 )
@@ -22,8 +23,9 @@ from scriptforge.models import Character, Script
 console = Console()
 
 
-def render_pov(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = False) -> Path | None:
-    """Orchestrate the POV lip-sync render pipeline."""
+def render_pov(conn: sqlite3.Connection, script_id: int, *,
+               dry_run: bool = False, engine: str = "kling") -> Path | None:
+    """Orchestrate the POV render pipeline. Engine: 'kling' (two-pass) or 'fabric' (legacy)."""
     script = db.get_script(conn, script_id)
     if not script:
         console.print(f"[red]Script #{script_id} not found.[/red]")
@@ -39,7 +41,7 @@ def render_pov(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = Fals
     output_dir = OUTPUT_DIR / str(script_id)
 
     if dry_run:
-        _show_pov_dry_run(script, character, output_dir)
+        _show_pov_dry_run(script, character, output_dir, engine=engine)
         return None
 
     from scriptforge.config import check_keys
@@ -53,11 +55,12 @@ def render_pov(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = Fals
     (output_dir / "images").mkdir(parents=True, exist_ok=True)
 
     # Step 1: Generate full voiceover (cached)
-    console.print("\n[bold cyan]Step 1/6:[/bold cyan] Generating voiceover...")
+    n_steps = 7 if engine == "kling" else 6
+    console.print(f"\n[bold cyan]Step 1/{n_steps}:[/bold cyan] Generating voiceover...")
     voiceover = generate_pov_voiceover(script, output_dir, conn)
 
     # Step 2: Split audio into chunks
-    console.print("[bold cyan]Step 2/6:[/bold cyan] Splitting audio into scene chunks...")
+    console.print(f"[bold cyan]Step 2/{n_steps}:[/bold cyan] Splitting audio into scene chunks...")
     chunks = split_audio_by_scenes(voiceover, script, output_dir)
 
     # Step 3: Generate POV reference portrait (cached per script + outfit)
@@ -66,26 +69,43 @@ def render_pov(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = Fals
     hook_emotion = first_scene.character_emotion if first_scene else ""
     ref_path = output_dir / "images" / "pov_reference.png"
     if ref_path.exists():
-        console.print("[bold cyan]Step 3/6:[/bold cyan] POV reference portrait cached, skipping.")
+        console.print(f"[bold cyan]Step 3/{n_steps}:[/bold cyan] POV reference portrait cached, skipping.")
         ref_image = ref_path
     else:
-        console.print("[bold cyan]Step 3/6:[/bold cyan] Generating POV reference portrait...")
+        console.print(f"[bold cyan]Step 3/{n_steps}:[/bold cyan] Generating POV reference portrait...")
         ref_image = generate_pov_reference(
             character, first_lighting, hook_emotion, output_dir, conn, script_id,
             outfit_override=script.outfit, tone=script.tone,
         )
 
-    # Step 4: Generate lip-sync clips
-    console.print("[bold cyan]Step 4/6:[/bold cyan] Generating lip-sync video clips...")
-    clips = generate_lipsync_clips(script, character, chunks, ref_image, output_dir, conn)
+    if engine == "kling":
+        # Step 4: Generate movement clips (Kling v3 Pro — full body/background animation)
+        console.print(f"[bold cyan]Step 4/{n_steps}:[/bold cyan] Generating movement clips (Kling v3 Pro)...")
+        movement_clips, clip_audio = generate_movement_clips(
+            script, character, chunks, ref_image, output_dir, conn,
+        )
 
-    # Step 5: Generate word-level subtitles
-    console.print("[bold cyan]Step 5/6:[/bold cyan] Generating word-level subtitles...")
-    subtitles = generate_subtitles(voiceover, output_dir)
+        # Step 5: Apply lip-sync (Kling lip-sync — mouth animation on top of movement)
+        console.print(f"[bold cyan]Step 5/{n_steps}:[/bold cyan] Applying lip-sync (Kling lip-sync)...")
+        clips = apply_lipsync(movement_clips, clip_audio, script, output_dir, conn)
 
-    # Step 6: Assemble final video
-    console.print("[bold cyan]Step 6/6:[/bold cyan] Assembling final video...")
-    final = assemble_pov(clips, voiceover, subtitles, output_dir)
+        # Step 6: Subtitles
+        console.print(f"[bold cyan]Step 6/{n_steps}:[/bold cyan] Generating word-level subtitles...")
+        subtitles = generate_subtitles(voiceover, output_dir)
+
+        # Step 7: Assembly
+        console.print(f"[bold cyan]Step 7/{n_steps}:[/bold cyan] Assembling final video...")
+        final = assemble_pov(clips, voiceover, subtitles, output_dir)
+    else:
+        # Legacy Fabric pipeline
+        console.print(f"[bold cyan]Step 4/{n_steps}:[/bold cyan] Generating lip-sync clips (VEED Fabric)...")
+        clips = generate_lipsync_clips_fabric(script, character, chunks, ref_image, output_dir, conn)
+
+        console.print(f"[bold cyan]Step 5/{n_steps}:[/bold cyan] Generating word-level subtitles...")
+        subtitles = generate_subtitles(voiceover, output_dir)
+
+        console.print(f"[bold cyan]Step 6/{n_steps}:[/bold cyan] Assembling final video...")
+        final = assemble_pov(clips, voiceover, subtitles, output_dir)
 
     # Auto-review rendered output
     from scriptforge.config import ANTHROPIC_API_KEY
@@ -101,12 +121,14 @@ def render_pov(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = Fals
     return final
 
 
+# --- Voiceover ---
+
+
 def generate_pov_voiceover(script: Script, output_dir: Path,
                             conn: sqlite3.Connection | None = None) -> Path:
     """Generate POV voiceover using ElevenLabs with a female voice."""
     voiceover_path = output_dir / "voiceover.mp3"
 
-    # Resume: skip if exists
     if voiceover_path.exists():
         console.print(f"    Cached: {voiceover_path.name}")
         return voiceover_path
@@ -133,13 +155,12 @@ def generate_pov_voiceover(script: Script, output_dir: Path,
     with open(voiceover_path, "wb") as f:
         f.write(audio_data)
 
-    # Speed-adjust if voiceover is significantly longer than target duration
     from pydub import AudioSegment
     audio = AudioSegment.from_file(str(voiceover_path))
     original_dur_s = len(audio) / 1000.0
     target_s = float(script.total_duration)
     if original_dur_s > target_s * 1.1:
-        speed_factor = min(1.5, original_dur_s / target_s)  # Cap at 1.5x to avoid distortion
+        speed_factor = min(1.5, original_dur_s / target_s)
         adjusted_s = original_dur_s / speed_factor
         console.print(f"    Adjusting speed: {original_dur_s:.1f}s -> {adjusted_s:.0f}s ({speed_factor:.2f}x)")
         audio = audio.speedup(playback_speed=speed_factor, chunk_size=150, crossfade=25)
@@ -150,11 +171,13 @@ def generate_pov_voiceover(script: Script, output_dir: Path,
     if conn:
         final_audio = AudioSegment.from_file(str(voiceover_path))
         final_dur_s = len(final_audio) / 1000.0
-        # Cost based on original duration — ElevenLabs charges on input, not sped-up output
         db.log_render_step(conn, script.id, "pov_voiceover", "elevenlabs-v3",
                            final_dur_s, original_dur_s * COST_ELEVENLABS)
 
     return voiceover_path
+
+
+# --- Audio splitting ---
 
 
 def split_audio_by_scenes(voiceover: Path, script: Script, output_dir: Path) -> list[Path]:
@@ -171,7 +194,6 @@ def split_audio_by_scenes(voiceover: Path, script: Script, output_dir: Path) -> 
     for i, scene in enumerate(script.scenes):
         chunk_path = output_dir / "chunks" / f"chunk_{i + 1:02d}.mp3"
 
-        # Resume: skip if exists
         if chunk_path.exists():
             console.print(f"    Chunk {i + 1}: cached, skipping.")
             chunks.append(chunk_path)
@@ -194,6 +216,9 @@ def split_audio_by_scenes(voiceover: Path, script: Script, output_dir: Path) -> 
         position_ms += chunk_duration_ms
 
     return chunks
+
+
+# --- Reference portrait ---
 
 
 def generate_pov_reference(character: Character, lighting: str, hook_emotion: str,
@@ -229,7 +254,10 @@ def generate_pov_reference(character: Character, lighting: str, hook_emotion: st
     return ref_path
 
 
-MAX_LIPSYNC_CHUNK_SECONDS = 7.0
+# --- Chunk splitting ---
+
+
+MAX_MOVEMENT_CHUNK_SECONDS = 10.0  # Kling lip-sync accepts 2-10s video
 MAX_TOTAL_SUBCLIPS = 6
 
 
@@ -259,11 +287,176 @@ def _split_long_chunk(chunk_path: Path, max_seconds: float,
     return sub_chunks
 
 
-def generate_lipsync_clips(script: Script, character: Character,
-                            chunks: list[Path], ref_image: Path,
-                            output_dir: Path,
-                            conn: sqlite3.Connection | None = None) -> list[Path]:
-    """Generate lip-synced video clips using VEED Fabric 1.0."""
+# --- Pass 1: Movement clips (Kling v3 Pro) ---
+
+
+def generate_movement_clips(
+    script: Script, character: Character,
+    chunks: list[Path], ref_image: Path,
+    output_dir: Path,
+    conn: sqlite3.Connection | None = None,
+) -> tuple[list[Path], list[Path]]:
+    """Generate movement video clips using Kling v3 Pro.
+
+    Pass 1 of two-pass pipeline: full body/background animation without lip-sync.
+    Returns (clip_paths, matched_audio_paths) for the lip-sync pass.
+    """
+    import fal_client
+
+    os.environ["FAL_KEY"] = FAL_KEY
+    clips: list[Path] = []
+    audio_for_clips: list[Path] = []
+    current_image = ref_image
+    total_subclips = 0
+
+    for i, (scene, chunk) in enumerate(zip(script.scenes, chunks)):
+        # Split long audio chunks, respect sub-clip budget
+        remaining_budget = max(1, MAX_TOTAL_SUBCLIPS - total_subclips)
+        chunk_max = MAX_MOVEMENT_CHUNK_SECONDS
+        if remaining_budget <= 1:
+            chunk_max = 999.0  # No splitting -- budget exhausted
+        sub_chunks = _split_long_chunk(chunk, chunk_max, output_dir, i + 1)
+        n_sub = len(sub_chunks)
+        total_subclips += n_sub
+
+        for j, sub_chunk in enumerate(sub_chunks):
+            if n_sub == 1:
+                clip_path = output_dir / "clips" / f"move_{i + 1:02d}.mp4"
+                clip_label = f"scene {i + 1}"
+            else:
+                clip_path = output_dir / "clips" / f"move_{i + 1:02d}_{j + 1:02d}.mp4"
+                clip_label = f"scene {i + 1} part {j + 1}/{n_sub}"
+
+            # Resume: skip if exists
+            if clip_path.exists():
+                console.print(f"  {clip_label} [{scene.beat}]: cached, skipping.")
+                clips.append(clip_path)
+                audio_for_clips.append(sub_chunk)
+                lf = extract_last_frame(clip_path, output_dir, i + 1)
+                if lf:
+                    current_image = lf
+                continue
+
+            # Determine clip duration from audio length, clamped to 3-10s
+            from pydub import AudioSegment
+            sub_dur_s = len(AudioSegment.from_file(str(sub_chunk))) / 1000.0
+            duration = str(min(10, max(3, round(sub_dur_s))))
+
+            console.print(f"  {clip_label} [{scene.beat}]: generating movement clip ({duration}s)...")
+
+            # Build full cinematic prompt
+            prev = script.scenes[i - 1] if i > 0 else None
+            video_prompt = build_pov_video_prompt(
+                scene, character, prev_scene=prev,
+                scenes=script.scenes, scene_index=i,
+                outfit_override=script.outfit,
+            )
+
+            image_url = retry_api_call(
+                fal_client.upload_file, str(current_image),
+                label=f"upload reference for {clip_label}",
+            )
+
+            result = retry_api_call(
+                fal_client.subscribe, MODEL_KLING_V3,
+                arguments={
+                    "start_image_url": image_url,
+                    "prompt": video_prompt,
+                    "negative_prompt": KLING_NEGATIVE,
+                    "duration": duration,
+                    "generate_audio": False,
+                },
+                label=f"Kling v3 Pro ({clip_label})",
+            )
+
+            safe_download(result["video"]["url"], str(clip_path), label=f"{clip_label} movement clip")
+            console.print(f"    Saved: {clip_path.name}")
+            clips.append(clip_path)
+            audio_for_clips.append(sub_chunk)
+
+            if conn:
+                step_name = f"movement_scene_{i + 1}" if n_sub == 1 else f"movement_scene_{i + 1}_sub_{j + 1}"
+                db.log_render_step(conn, script.id, step_name, "kling-v3-pro",
+                                   float(duration), float(duration) * COST_KLING_V3)
+
+            # Extract last frame for chaining
+            last_frame = extract_last_frame(clip_path, output_dir, i + 1)
+            if last_frame:
+                current_image = last_frame
+
+    return clips, audio_for_clips
+
+
+# --- Pass 2: Lip-sync (Kling lip-sync) ---
+
+
+def apply_lipsync(
+    clips: list[Path], audio_chunks: list[Path],
+    script: Script, output_dir: Path,
+    conn: sqlite3.Connection | None = None,
+) -> list[Path]:
+    """Apply lip-sync to movement clips using Kling lip-sync endpoint.
+
+    Pass 2 of two-pass pipeline: overlays mouth animation onto moving video.
+    """
+    import fal_client
+
+    os.environ["FAL_KEY"] = FAL_KEY
+    synced: list[Path] = []
+
+    for clip_path, audio_path in zip(clips, audio_chunks):
+        synced_path = clip_path.with_name(clip_path.stem.replace("move_", "sync_") + ".mp4")
+
+        # Resume: skip if exists
+        if synced_path.exists():
+            console.print(f"  {synced_path.stem}: cached, skipping.")
+            synced.append(synced_path)
+            continue
+
+        console.print(f"  {clip_path.stem}: applying lip-sync...")
+
+        video_url = retry_api_call(
+            fal_client.upload_file, str(clip_path),
+            label=f"upload video {clip_path.stem}",
+        )
+        audio_url = retry_api_call(
+            fal_client.upload_file, str(audio_path),
+            label=f"upload audio for {clip_path.stem}",
+        )
+
+        result = retry_api_call(
+            fal_client.subscribe, MODEL_KLING_LIPSYNC,
+            arguments={"video_url": video_url, "audio_url": audio_url},
+            label=f"Kling lip-sync ({clip_path.stem})",
+        )
+
+        safe_download(result["video"]["url"], str(synced_path), label=f"{clip_path.stem} lip-synced")
+        console.print(f"    Saved: {synced_path.name}")
+        synced.append(synced_path)
+
+        if conn:
+            from pydub import AudioSegment
+            dur_s = len(AudioSegment.from_file(str(audio_path))) / 1000.0
+            billed_s = math.ceil(dur_s / 5) * 5
+            db.log_render_step(conn, script.id, f"lipsync_{clip_path.stem}",
+                               "kling-lipsync", dur_s, billed_s * COST_KLING_LIPSYNC)
+
+    return synced
+
+
+# --- Legacy Fabric pipeline (fallback) ---
+
+
+MAX_FABRIC_CHUNK_SECONDS = 7.0
+
+
+def generate_lipsync_clips_fabric(
+    script: Script, character: Character,
+    chunks: list[Path], ref_image: Path,
+    output_dir: Path,
+    conn: sqlite3.Connection | None = None,
+) -> list[Path]:
+    """Generate lip-synced video clips using VEED Fabric 1.0 (legacy fallback)."""
     import fal_client
 
     os.environ["FAL_KEY"] = FAL_KEY
@@ -272,11 +465,10 @@ def generate_lipsync_clips(script: Script, character: Character,
     total_subclips = 0
 
     for i, (scene, chunk) in enumerate(zip(script.scenes, chunks)):
-        # Split long audio chunks, but respect total sub-clip cap
         remaining_budget = max(1, MAX_TOTAL_SUBCLIPS - total_subclips)
-        chunk_max = MAX_LIPSYNC_CHUNK_SECONDS
+        chunk_max = MAX_FABRIC_CHUNK_SECONDS
         if remaining_budget <= 1:
-            chunk_max = 999.0  # No splitting — budget exhausted
+            chunk_max = 999.0
         sub_chunks = _split_long_chunk(chunk, chunk_max, output_dir, i + 1)
         n_sub = len(sub_chunks)
         total_subclips += n_sub
@@ -289,7 +481,6 @@ def generate_lipsync_clips(script: Script, character: Character,
                 clip_path = output_dir / "clips" / f"clip_{i + 1:02d}_{j + 1:02d}.mp4"
                 clip_label = f"scene {i + 1} part {j + 1}/{n_sub}"
 
-            # Resume: skip if exists
             if clip_path.exists():
                 console.print(f"  {clip_label} [{scene.beat}]: cached, skipping.")
                 clips.append(clip_path)
@@ -326,12 +517,14 @@ def generate_lipsync_clips(script: Script, character: Character,
                 db.log_render_step(conn, script.id, step_name, "veed-fabric",
                                    sub_dur_s, sub_dur_s * COST_FABRIC)
 
-            # Extract last frame for next clip's reference
             last_frame = extract_last_frame(clip_path, output_dir, i + 1)
             if last_frame:
                 current_image = last_frame
 
     return clips
+
+
+# --- Frame extraction ---
 
 
 def extract_last_frame(clip_path: Path, output_dir: Path, scene_num: int) -> Path | None:
@@ -351,14 +544,16 @@ def extract_last_frame(clip_path: Path, output_dir: Path, scene_num: int) -> Pat
     return frame_path
 
 
-SUBTITLE_OFFSET: float = 0.3  # seconds — shift subtitles later to sync with speech
+# --- Subtitles ---
+
+
+SUBTITLE_OFFSET: float = 0.3
 
 
 def generate_subtitles(voiceover: Path, output_dir: Path) -> Path:
     """Generate word-level subtitles using faster-whisper with sync offset."""
     ass_path = output_dir / "subtitles.ass"
 
-    # Resume: skip if exists
     if ass_path.exists():
         console.print(f"    Cached: {ass_path.name}")
         return ass_path
@@ -408,6 +603,9 @@ def _format_ass_time(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
+# --- Assembly ---
+
+
 def assemble_pov(clips: list[Path], voiceover: Path, subtitles: Path,
                   output_dir: Path) -> Path:
     """Assemble POV video: concat clips + original voiceover + word-level subtitles."""
@@ -430,8 +628,6 @@ def assemble_pov(clips: list[Path], voiceover: Path, subtitles: Path,
         console.print(f"[red]FFmpeg concat error:[/red]\n{result.stderr}")
         raise RuntimeError("FFmpeg concat failed")
 
-    # Overlay voiceover + burn subtitles
-    # Use 'subtitles' filter with forward-slash path (more robust than 'ass' filter on Windows)
     sub_path_escaped = str(subtitles.resolve()).replace("\\", "/").replace(":", "\\\\:")
     cmd_final = [
         "ffmpeg", "-y",
@@ -461,28 +657,50 @@ def assemble_pov(clips: list[Path], voiceover: Path, subtitles: Path,
     return final_path
 
 
-def _show_pov_dry_run(script: Script, character: Character, output_dir: Path) -> None:
+# --- Dry run ---
+
+
+def _show_pov_dry_run(script: Script, character: Character, output_dir: Path, *,
+                      engine: str = "kling") -> None:
     """Show what the POV pipeline would do."""
     console.print(f"\n[bold yellow]DRY RUN (POV MODE)[/bold yellow] -- Script #{script.id}: {script.topic}\n")
 
     console.print(f"  Character: [bold]{character.name}[/bold] ({character.age}, {character.gender})")
-    console.print(f"  Mode: [bold magenta]POV lip-sync[/bold magenta]")
+    engine_label = "Kling two-pass (movement + lip-sync)" if engine == "kling" else "VEED Fabric (legacy)"
+    console.print(f"  Engine: [bold magenta]{engine_label}[/bold magenta]")
     console.print(f"  Output directory: {output_dir}")
     console.print(f"  Total scenes: {len(script.scenes)}")
     total_duration = sum(s.duration_seconds for s in script.scenes)
     console.print(f"  Total duration: {total_duration}s")
 
     ref_cost = COST_FLUX_PRO if not (output_dir / "images" / "pov_reference.png").exists() else 0
-    # Estimate based on word count → expected audio duration (more accurate than scene durations)
+
     from scriptforge.config import WPM
     expected_audio_s = max(total_duration, script.word_count / WPM * 60)
-    fabric_cost = expected_audio_s * COST_FABRIC
-    vo_cost = expected_audio_s * COST_ELEVENLABS
-    total_cost = ref_cost + fabric_cost + vo_cost
-    n_subclips = sum(max(1, math.ceil(s.duration_seconds * (expected_audio_s / total_duration) / MAX_LIPSYNC_CHUNK_SECONDS))
-                     for s in script.scenes) if total_duration > 0 else len(script.scenes)
-    console.print(f"  [bold]Estimated cost: ~${total_cost:.2f}[/bold] ({n_subclips} clips)")
-    console.print(f"    Reference: ${ref_cost:.2f} | Clips: ${fabric_cost:.2f} | Voiceover: ${vo_cost:.2f}")
+
+    if engine == "kling":
+        kling_video_cost = expected_audio_s * COST_KLING_V3
+        # Lip-sync billed per 5s increment per clip
+        n_clips = sum(max(1, math.ceil(s.duration_seconds / MAX_MOVEMENT_CHUNK_SECONDS))
+                      for s in script.scenes)
+        kling_lipsync_cost = sum(
+            math.ceil(min(s.duration_seconds, MAX_MOVEMENT_CHUNK_SECONDS) / 5) * 5 * COST_KLING_LIPSYNC
+            for s in script.scenes
+        )
+        vo_cost = expected_audio_s * COST_ELEVENLABS
+        total_cost = ref_cost + kling_video_cost + kling_lipsync_cost + vo_cost
+        console.print(f"  [bold]Estimated cost: ~${total_cost:.2f}[/bold] ({n_clips} clips x 2 passes)")
+        console.print(f"    Reference: ${ref_cost:.2f} | Kling video: ${kling_video_cost:.2f}"
+                       f" | Kling lip-sync: ${kling_lipsync_cost:.2f} | Voiceover: ${vo_cost:.2f}")
+    else:
+        fabric_cost = expected_audio_s * COST_FABRIC
+        vo_cost = expected_audio_s * COST_ELEVENLABS
+        n_clips = sum(max(1, math.ceil(s.duration_seconds / MAX_FABRIC_CHUNK_SECONDS))
+                      for s in script.scenes)
+        total_cost = ref_cost + fabric_cost + vo_cost
+        console.print(f"  [bold]Estimated cost: ~${total_cost:.2f}[/bold] ({n_clips} clips)")
+        console.print(f"    Reference: ${ref_cost:.2f} | Fabric: ${fabric_cost:.2f} | Voiceover: ${vo_cost:.2f}")
+
     console.print()
 
     table = Table(title="POV Render Plan")
@@ -508,7 +726,15 @@ def _show_pov_dry_run(script: Script, character: Character, output_dir: Path) ->
     console.print(f"  [bold]Step 2:[/bold] Split audio into {len(script.scenes)} scene chunks")
     ref_status = "cached" if (output_dir / "images" / "pov_reference.png").exists() else "generate new"
     console.print(f"  [bold]Step 3:[/bold] POV reference portrait ({ref_status})")
-    console.print(f"  [bold]Step 4:[/bold] Generate {len(script.scenes)} lip-sync clips (VEED Fabric 1.0, chained)")
-    console.print(f"  [bold]Step 5:[/bold] Generate word-level subtitles (Whisper)")
-    console.print(f"  [bold]Step 6:[/bold] Assemble with FFmpeg (concat + voiceover + subtitles)")
+
+    if engine == "kling":
+        console.print(f"  [bold]Step 4:[/bold] Generate movement clips (Kling v3 Pro, chained)")
+        console.print(f"  [bold]Step 5:[/bold] Apply lip-sync (Kling lip-sync, per clip)")
+        console.print(f"  [bold]Step 6:[/bold] Generate word-level subtitles (Whisper)")
+        console.print(f"  [bold]Step 7:[/bold] Assemble with FFmpeg (concat + voiceover + subtitles)")
+    else:
+        console.print(f"  [bold]Step 4:[/bold] Generate lip-sync clips (VEED Fabric 1.0, chained)")
+        console.print(f"  [bold]Step 5:[/bold] Generate word-level subtitles (Whisper)")
+        console.print(f"  [bold]Step 6:[/bold] Assemble with FFmpeg (concat + voiceover + subtitles)")
+
     console.print(f"\n  [dim]Run without --dry-run to execute.[/dim]\n")

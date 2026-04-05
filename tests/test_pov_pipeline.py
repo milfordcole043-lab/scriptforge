@@ -118,6 +118,16 @@ def test_pov_video_prompt() -> None:
     assert "Consistent lighting" in prompt
 
 
+def test_pov_video_prompt_has_motion() -> None:
+    """POV prompts now include [MOTION] section for Kling two-pass pipeline."""
+    char = Character(id=1, name="Maya", age="late 20s", gender="female",
+                     appearance="dark wavy hair", clothing="hoodie", created_at=None)
+    scene = _pov_scene(dur=8)
+    scene.motion = "gentle weight shift, fingers touch necklace"
+    prompt = build_pov_video_prompt(scene, char)
+    assert "[MOTION]" in prompt
+
+
 def test_pov_reference_prompt_with_emotion() -> None:
     char = Character(id=1, name="Maya", age="late 20s", gender="female",
                      appearance="dark wavy hair, brown skin",
@@ -175,7 +185,7 @@ def test_pov_dry_run(tmp_path: Path) -> None:
     result = _invoke(tmp_path, ["render", str(script_id), "--dry-run"])
     assert result.exit_code == 0
     assert "POV" in result.output
-    assert "lip-sync" in result.output.lower() or "Fabric" in result.output
+    assert "Kling" in result.output
     assert "Maya" in result.output
 
 
@@ -192,13 +202,23 @@ def test_pov_dry_run_shows_cost(tmp_path: Path) -> None:
     assert "$" in result.output
 
 
-def test_pov_dry_run_shows_steps(tmp_path: Path) -> None:
+def test_pov_dry_run_shows_two_pass_steps(tmp_path: Path) -> None:
     script_id = _seed_pov_script(tmp_path)
     result = _invoke(tmp_path, ["render", str(script_id), "--dry-run"])
     assert "voiceover" in result.output.lower()
     assert "chunk" in result.output.lower()
     assert "Whisper" in result.output
     assert "reference portrait" in result.output.lower()
+    assert "movement clips" in result.output.lower()
+    assert "lip-sync" in result.output.lower()
+
+
+def test_pov_dry_run_fabric_fallback(tmp_path: Path) -> None:
+    script_id = _seed_pov_script(tmp_path)
+    result = _invoke(tmp_path, ["render", str(script_id), "--dry-run", "--engine", "fabric"])
+    assert result.exit_code == 0
+    assert "Fabric" in result.output
+    assert "legacy" in result.output.lower()
 
 
 # --- Narrator routing still works ---

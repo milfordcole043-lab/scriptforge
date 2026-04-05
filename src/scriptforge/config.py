@@ -28,10 +28,12 @@ VOICE_POV: str = "pFZP5JQG7iQjIQuC4Bku"  # Lily — young female
 MODEL_FLUX_PRO: str = "fal-ai/flux-pro/v1.1"
 MODEL_KLING_V3: str = "fal-ai/kling-video/v3/pro/image-to-video"
 MODEL_FABRIC: str = "veed/fabric-1.0"
+MODEL_KLING_LIPSYNC: str = "fal-ai/kling-video/lipsync/audio-to-video"
 
 # --- Cost estimates (USD) ---
 COST_FLUX_PRO: float = 0.04       # per image
 COST_KLING_V3: float = 0.112      # per second, no audio
+COST_KLING_LIPSYNC: float = 0.014 # per second (billed per 5s increment)
 COST_ELEVENLABS: float = 0.03     # per second estimate
 COST_FABRIC: float = 0.15         # per second at 720p
 
