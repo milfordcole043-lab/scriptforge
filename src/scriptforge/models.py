@@ -171,6 +171,21 @@ class SceneReview:
     score: int
     issues: list[str] = field(default_factory=list)
     suggestions: list[str] = field(default_factory=list)
+    face_consistency: int = 0
+    outfit_accuracy: int = 0
+    background_aliveness: int = 0
+    body_language: int = 0
+    lip_sync_quality: int = 0
+
+
+@dataclass
+class TransitionReview:
+    from_scene: int
+    to_scene: int
+    same_person: bool = True
+    same_outfit: bool = True
+    jarring_jump: bool = False
+    notes: str = ""
 
 
 @dataclass
@@ -180,6 +195,8 @@ class VideoReview:
     overall_score: float
     sync_issues: list[str] = field(default_factory=list)
     rerender_needed: list[int] = field(default_factory=list)
+    transition_reviews: list[TransitionReview] = field(default_factory=list)
+    summary: dict = field(default_factory=dict)
     created_at: datetime | None = None
 
 
