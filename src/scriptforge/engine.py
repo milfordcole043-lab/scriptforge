@@ -120,6 +120,11 @@ _BACKGROUND_ELEMENTS = {
         "micro_lighting": ["warm light from window shifts as cloud passes", "overhead lamp sways slightly changing shadow angle", "reflection moves across her face from passing car outside"],
         "depth": ["other customers in warm bokeh blur", "coffee equipment as abstract shapes behind her", "window reflections layering over background"],
     },
+    "bedroom": {
+        "movements": ["curtain swaying slightly from cracked window", "phone screen dimming then brightening on nightstand", "shadow shifting on wall from passing car headlights", "dust particles floating in beam of light", "sheet edge lifting from vent air", "clock display changing silently"],
+        "micro_lighting": ["phone screen flickers changing shadow angle", "car headlights sweep across ceiling briefly", "moonlight shifts as cloud passes"],
+        "depth": ["pillows and sheets in soft foreground blur", "far wall receding into shadow", "doorframe creating depth layers with hallway light"],
+    },
     "car": {
         "movements": ["streetlights sliding across windshield", "rain streaks crawling down side window", "headlights of passing car sweeping across", "traffic signal changing color reflected in glass", "wipers clearing rain in rhythm", "dashboard glow pulsing slightly"],
         "micro_lighting": ["streetlight passes overhead casting moving shadow", "oncoming headlights briefly brighten then fade", "traffic light shifts from red glow to green"],
@@ -163,7 +168,9 @@ def generate_background_elements(location: str, lighting: str = "",
             category = "coffee"
         elif any(w in location_lower for w in ("vehicle", "taxi", "bus", "uber")):
             category = "car"
-        elif any(w in location_lower for w in ("office", "kitchen", "bedroom", "room", "indoor")):
+        elif any(w in location_lower for w in ("bed", "pillow", "sheets", "mattress")):
+            category = "bedroom"
+        elif any(w in location_lower for w in ("office", "kitchen", "room", "indoor")):
             category = "bathroom"
         elif any(w in location_lower for w in ("sidewalk", "alley", "corner", "city", "urban")):
             category = "street"
@@ -227,7 +234,7 @@ def build_video_prompt(scene: Scene, character: Character | None = None,
 
     # [BACKGROUND] — auto-generated cinematic elements
     bg_moves = ", ".join(bg["background_movement"])
-    sections.append(f"[BACKGROUND] {bg_moves}. All background elements in soft bokeh blur")
+    sections.append(f"[BACKGROUND] {bg_moves}. All background elements in out-of-focus bokeh, f/2.0 depth of field, subject in sharp focus")
 
     # [MOTION] — temporal flow
     temporal_motion = _build_temporal_motion(scene)
@@ -275,7 +282,11 @@ def build_pov_video_prompt(scene: Scene, character: Character,
             "Character should never be a frozen talking head -- subtle continuous movement"
         )
 
-    sections.append("[SPEECH] Talking directly to camera, eyes locked on camera lens, clear mouth articulation, natural lip movement")
+    sections.append(
+        "[SPEECH] Talking directly to camera, eyes locked on camera lens. "
+        "Mouth naturally open during speech, relaxed jaw, never over-articulated or pursed. "
+        "Natural lip movement matching speech rhythm"
+    )
 
     # Light progression with micro-lighting shift
     lighting = scene.lighting
@@ -287,7 +298,7 @@ def build_pov_video_prompt(scene: Scene, character: Character,
 
     # [BACKGROUND] — auto-generated cinematic elements
     bg_moves = ", ".join(bg["background_movement"])
-    sections.append(f"[BACKGROUND] {bg_moves}. All background elements in soft bokeh blur")
+    sections.append(f"[BACKGROUND] {bg_moves}. All background elements in out-of-focus bokeh, f/2.0 depth of field, subject in sharp focus")
 
     sections.append("[CAMERA] Phone camera perspective, slightly below eye level, subtle handheld wobble")
     sections.append(f"[STYLE] Raw, intimate, cinematic, shallow depth of field, natural skin texture, no airbrushing. {bg['ambient_depth']}")
@@ -355,9 +366,11 @@ def build_pov_reference_prompt(character: Character, lighting: str = "",
     # Tone-based presentation overrides default emotion
     tone_desc = _TONE_PRESENTATION.get(tone, _TONE_PRESENTATION["empowering"])
     if hook_emotion:
-        parts.append(f"{hook_emotion}, {tone_desc}, lips slightly parted showing teeth")
+        parts.append(f"{hook_emotion}, {tone_desc}")
     else:
-        parts.append(f"{tone_desc}, lips slightly parted showing teeth")
+        parts.append(f"{tone_desc}")
+    # Teeth visibility is critical for Fabric lip-sync — enforce as standalone directive
+    parts.append("Lips slightly parted showing teeth, relaxed jaw, natural mouth position")
     parts.append("Holding phone in selfie position")
     if lighting:
         parts.append(lighting)
@@ -387,16 +400,16 @@ def _interpolate_lighting(scenes: list[Scene], index: int) -> str:
     if current_lighting and current_lighting != first_lighting:
         return current_lighting
 
-    # Auto-interpolate based on position
+    # Blend based on position — concrete descriptions, not temporal language
     total = len(scenes) - 1
     progress = index / total
 
     if progress <= 0.33:
-        return f"{first_lighting}, beginning to shift"
+        return f"{first_lighting}"
     elif progress <= 0.66:
-        return f"{first_lighting} mixing with early traces of {last_lighting}"
+        return f"{first_lighting} with hints of {last_lighting}"
     else:
-        return f"Transitioning from {first_lighting} toward {last_lighting}"
+        return f"{last_lighting} with remnants of {first_lighting}"
 
 
 # --- Variety tracking ---

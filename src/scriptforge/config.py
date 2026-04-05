@@ -37,7 +37,7 @@ COST_FABRIC: float = 0.15         # per second at 720p
 
 # --- Video generation ---
 KLING_NEGATIVE: str = "blur, flickering, morphing faces, distorted hands, text, watermark, low quality, jittery motion"
-COST_CLAUDE_VISION: float = 0.01  # per image review estimate
+COST_CLAUDE_VISION: float = 0.04  # per review call (3 frames + reference per scene)
 WPM: int = 130  # words per minute for voiceover pacing
 
 console = Console()

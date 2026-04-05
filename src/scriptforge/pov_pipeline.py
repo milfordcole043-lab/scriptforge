@@ -18,7 +18,6 @@ from scriptforge.config import (
 )
 from scriptforge.engine import build_pov_reference_prompt, build_pov_video_prompt
 from scriptforge.models import Character, Script
-from scriptforge.researcher import review_image
 
 console = Console()
 
@@ -137,22 +136,23 @@ def generate_pov_voiceover(script: Script, output_dir: Path,
     # Speed-adjust if voiceover is significantly longer than target duration
     from pydub import AudioSegment
     audio = AudioSegment.from_file(str(voiceover_path))
-    actual_s = len(audio) / 1000.0
+    original_dur_s = len(audio) / 1000.0
     target_s = float(script.total_duration)
-    if actual_s > target_s * 1.1:
-        speed_factor = min(1.5, actual_s / target_s)  # Cap at 1.5x to avoid distortion
-        adjusted_s = actual_s / speed_factor
-        console.print(f"    Adjusting speed: {actual_s:.1f}s -> {adjusted_s:.0f}s ({speed_factor:.2f}x)")
+    if original_dur_s > target_s * 1.1:
+        speed_factor = min(1.5, original_dur_s / target_s)  # Cap at 1.5x to avoid distortion
+        adjusted_s = original_dur_s / speed_factor
+        console.print(f"    Adjusting speed: {original_dur_s:.1f}s -> {adjusted_s:.0f}s ({speed_factor:.2f}x)")
         audio = audio.speedup(playback_speed=speed_factor, chunk_size=150, crossfade=25)
         audio.export(str(voiceover_path), format="mp3")
 
     console.print(f"    Saved: {voiceover_path.name}")
 
     if conn:
-        # Log actual duration, not script target
         final_audio = AudioSegment.from_file(str(voiceover_path))
-        dur_s = len(final_audio) / 1000.0
-        db.log_render_step(conn, script.id, "pov_voiceover", "elevenlabs-v3", dur_s, dur_s * COST_ELEVENLABS)
+        final_dur_s = len(final_audio) / 1000.0
+        # Cost based on original duration — ElevenLabs charges on input, not sped-up output
+        db.log_render_step(conn, script.id, "pov_voiceover", "elevenlabs-v3",
+                           final_dur_s, original_dur_s * COST_ELEVENLABS)
 
     return voiceover_path
 
@@ -215,32 +215,15 @@ def generate_pov_reference(character: Character, lighting: str, hook_emotion: st
     prompt = build_pov_reference_prompt(character, lighting, hook_emotion,
                                          outfit_override=outfit_override, tone=tone)
 
-    # Create a synthetic hook scene for review
-    from scriptforge.models import Scene
-    hook_scene = Scene(beat="hook", voiceover="", character_action="holding phone in selfie position",
-                       location="dark bedroom", character_emotion=hook_emotion or "exhausted",
-                       camera="static close-up", lighting=lighting or "soft warm lighting",
-                       motion="still", sound="silence", caption="REF", duration_seconds=3)
+    result = retry_api_call(
+        fal_client.subscribe, MODEL_FLUX_PRO,
+        arguments={"prompt": prompt, "image_size": "portrait_16_9", "num_images": 1},
+        label="Flux Pro (POV reference)",
+    )
+    safe_download(result["images"][0]["url"], str(ref_path), label="POV reference")
 
-    for attempt in range(3):
-        score, issues, adjustment = review_image(ref_path, character, hook_scene)
-        if attempt > 0 and issues:
-            console.print(f"    Review score: {score}/10 — adjusting prompt...")
-            prompt = prompt.rstrip(".") + ". " + adjustment + "."
-
-        result = retry_api_call(
-            fal_client.subscribe, MODEL_FLUX_PRO,
-            arguments={"prompt": prompt, "image_size": "portrait_16_9", "num_images": 1},
-            label="Flux Pro (POV reference)",
-        )
-        safe_download(result["images"][0]["url"], str(ref_path), label="POV reference")
-
-        if conn and script_id:
-            db.log_render_step(conn, script_id, "pov_reference", "flux-pro", 0, COST_FLUX_PRO)
-
-        if score >= 7 or attempt == 2:
-            console.print(f"    Review: {score}/10")
-            break
+    if conn and script_id:
+        db.log_render_step(conn, script_id, "pov_reference", "flux-pro", 0, COST_FLUX_PRO)
 
     console.print(f"    Saved: {ref_path.name}")
     return ref_path

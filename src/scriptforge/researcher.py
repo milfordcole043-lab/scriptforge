@@ -133,12 +133,12 @@ def grade_prompt(prompt: str, prompt_rules: list[PromptRule]) -> tuple[int, list
             else:
                 missing.append(f"{element}: {rule.rule}")
         elif element == "structure":
-            # Check word count under 80
+            # Video prompts with labelled sections run 100-150 words — that's correct
             word_count = len(prompt.split())
-            if word_count <= 80:
+            if word_count <= 150:
                 earned_weight += rule.weight
             else:
-                missing.append(f"{element}: prompt is {word_count} words (max 80)")
+                missing.append(f"{element}: prompt is {word_count} words (max 150)")
         elif element in _ELEMENT_PATTERNS:
             patterns = _ELEMENT_PATTERNS[element]
             if any(p in prompt_lower for p in patterns):
@@ -160,21 +160,27 @@ def grade_prompt(prompt: str, prompt_rules: list[PromptRule]) -> tuple[int, list
 
 
 def _enhance_prompt(prompt: str, missing: list[str], rules: list[PromptRule]) -> str:
-    """Auto-enhance a prompt by adding missing elements."""
+    """Auto-enhance a prompt by adding missing elements, context-aware for POV vs narrator."""
     additions: list[str] = []
-
     missing_elements = {m.split(":")[0].strip() for m in missing}
+    is_pov = "talking directly to camera" in prompt.lower() or "selfie" in prompt.lower()
 
     if "camera" in missing_elements:
-        additions.append("Slow dolly-in, cinematic framing")
+        if is_pov:
+            additions.append("Phone camera, slightly below eye level, subtle handheld wobble")
+        else:
+            additions.append("Slow dolly-in, cinematic framing")
     if "lighting" in missing_elements:
         additions.append("Soft warm lighting with subtle shadows")
     if "motion" in missing_elements:
-        additions.append("Gentle movement, particles drifting slowly")
+        if is_pov:
+            additions.append("Subtle weight shift, slight head movement while speaking")
+        else:
+            additions.append("Gentle movement, settling into stillness")
     if "atmosphere" in missing_elements:
         additions.append("Muted warm tones, high contrast")
     if "style" in missing_elements:
-        additions.append("Cinematic, 35mm film grain")
+        additions.append("Cinematic, 35mm film grain, shallow depth of field")
     if "sound" in missing_elements:
         additions.append("Ambient silence with distant hum")
 

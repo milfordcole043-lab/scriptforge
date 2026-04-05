@@ -84,7 +84,7 @@ def test_grade_text_in_prompt_penalized(conn: sqlite3.Connection) -> None:
 
 def test_grade_too_long_prompt(conn: sqlite3.Connection) -> None:
     rules = _seed_rules(conn)
-    words = " ".join(["word"] * 100)
+    words = " ".join(["word"] * 160)
     prompt = f"A person in a room. Tracking shot. Light fading. Rain ambient. Cinematic noir. Cold blue. {words}"
     score, missing, _ = grade_prompt(prompt, rules)
     assert any("structure" in m for m in missing)
