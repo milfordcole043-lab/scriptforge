@@ -148,6 +148,14 @@ def test_pov_reference_prompt_default_lighting() -> None:
     assert "tired" in prompt.lower()
 
 
+def test_pov_reference_prompt_outfit_override() -> None:
+    char = Character(id=1, name="Maya", age="late 20s", gender="female",
+                     appearance="dark hair", clothing="hoodie", created_at=None)
+    prompt = build_pov_reference_prompt(char, outfit_override="burgundy velvet blazer, black lace top")
+    assert "burgundy velvet blazer" in prompt
+    assert "hoodie" not in prompt
+
+
 # --- ASS subtitle formatting ---
 
 

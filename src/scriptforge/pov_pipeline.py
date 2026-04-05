@@ -61,7 +61,7 @@ def render_pov(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = Fals
     console.print("[bold cyan]Step 2/6:[/bold cyan] Splitting audio into scene chunks...")
     chunks = split_audio_by_scenes(voiceover, script, output_dir)
 
-    # Step 3: Generate POV reference portrait (cached)
+    # Step 3: Generate POV reference portrait (cached per script + outfit)
     first_scene = script.scenes[0] if script.scenes else None
     first_lighting = first_scene.lighting if first_scene else ""
     hook_emotion = first_scene.character_emotion if first_scene else ""
@@ -71,7 +71,10 @@ def render_pov(conn: sqlite3.Connection, script_id: int, *, dry_run: bool = Fals
         ref_image = ref_path
     else:
         console.print("[bold cyan]Step 3/6:[/bold cyan] Generating POV reference portrait...")
-        ref_image = generate_pov_reference(character, first_lighting, hook_emotion, output_dir, conn, script_id)
+        ref_image = generate_pov_reference(
+            character, first_lighting, hook_emotion, output_dir, conn, script_id,
+            outfit_override=script.outfit, tone=script.tone,
+        )
 
     # Step 4: Generate lip-sync clips
     console.print("[bold cyan]Step 4/6:[/bold cyan] Generating lip-sync video clips...")
@@ -196,7 +199,9 @@ def split_audio_by_scenes(voiceover: Path, script: Script, output_dir: Path) -> 
 def generate_pov_reference(character: Character, lighting: str, hook_emotion: str,
                             output_dir: Path,
                             conn: sqlite3.Connection | None = None,
-                            script_id: int = 0) -> Path:
+                            script_id: int = 0,
+                            outfit_override: str | None = None,
+                            tone: str = "empowering") -> Path:
     """Generate a POV selfie reference portrait via Flux Pro with emotional state."""
     import fal_client
 
@@ -207,7 +212,8 @@ def generate_pov_reference(character: Character, lighting: str, hook_emotion: st
         console.print(f"    Cached: {ref_path.name}")
         return ref_path
 
-    prompt = build_pov_reference_prompt(character, lighting, hook_emotion)
+    prompt = build_pov_reference_prompt(character, lighting, hook_emotion,
+                                         outfit_override=outfit_override, tone=tone)
 
     # Create a synthetic hook scene for review
     from scriptforge.models import Scene
