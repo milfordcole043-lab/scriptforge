@@ -24,7 +24,7 @@ console = Console()
 def extract_scene_frames(script: Script, output_dir: Path) -> list[list[Path]]:
     """Extract 3 frames per scene: start (0.5s in), mid, end (0.5s before end).
 
-    Returns a list of lists — one list of 3 frame paths per scene.
+    Returns a list of lists -- one list of 3 frame paths per scene.
     """
     frames_dir = output_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
@@ -157,7 +157,7 @@ def _review_scene_comprehensive(
         f"Expected outfit: {outfit_description}\n"
         f"Beat: {scene_beat} | Emotion: {scene_emotion} | Lighting: {scene_lighting} | Camera: {scene_camera}\n\n"
         f"You have the reference portrait and 3 frames (start, middle, end) from this scene.\n"
-        f"Check for drift/morphing between start→mid→end frames.\n\n"
+        f"Check for drift/morphing between start->mid->end frames.\n\n"
         f"Score each dimension 1-10 and respond in this exact JSON format:\n"
         f'{{"face_consistency": 1-10, "outfit_accuracy": 1-10, '
         f'"background_aliveness": 1-10, "body_language": 1-10, '
@@ -212,7 +212,7 @@ def _review_transition(
     content.extend(_image_block(start_frame))
 
     prompt = (
-        f"These are two consecutive frames from a video — the end of scene {from_scene + 1} "
+        f"These are two consecutive frames from a video -- the end of scene {from_scene + 1} "
         f"and the start of scene {to_scene + 1}.\n"
         f"The character should be: {character.gender}, {character.age}, {character.appearance}.\n\n"
         f"Answer in this exact JSON format:\n"
@@ -269,11 +269,11 @@ def _build_summary(scene_reviews: list[SceneReview],
     transition_issues: list[str] = []
     for tr in transition_reviews:
         if not tr.same_person:
-            transition_issues.append(f"Scene {tr.from_scene + 1}→{tr.to_scene + 1}: character identity changed")
+            transition_issues.append(f"Scene {tr.from_scene + 1}->{tr.to_scene + 1}: character identity changed")
         if not tr.same_outfit:
-            transition_issues.append(f"Scene {tr.from_scene + 1}→{tr.to_scene + 1}: outfit changed")
+            transition_issues.append(f"Scene {tr.from_scene + 1}->{tr.to_scene + 1}: outfit changed")
         if tr.jarring_jump:
-            transition_issues.append(f"Scene {tr.from_scene + 1}→{tr.to_scene + 1}: jarring visual jump")
+            transition_issues.append(f"Scene {tr.from_scene + 1}->{tr.to_scene + 1}: jarring visual jump")
 
     # Top 3 issues to fix (most impactful)
     top_issues: list[str] = []
@@ -362,8 +362,8 @@ def review_rendered_video(script: Script, character: Character, output_dir: Path
                     status = "[red]IDENTITY CHANGE[/red]"
                 elif not tr.same_outfit:
                     status = "[yellow]OUTFIT CHANGE[/yellow]"
-                console.print(f"    Scene {i + 1}→{i + 2}: {status}"
-                               + (f" — {tr.notes}" if tr.notes else ""))
+                console.print(f"    Scene {i + 1}->{i + 2}: {status}"
+                               + (f" -- {tr.notes}" if tr.notes else ""))
 
                 if conn:
                     db.log_render_step(conn, script.id, f"vision_transition_{i + 1}_{i + 2}",
@@ -393,7 +393,7 @@ def review_rendered_video(script: Script, character: Character, output_dir: Path
     if conn:
         db.save_video_review(conn, review)
 
-    # Step 6: Auto-learn — store scores in scene feedback
+    # Step 6: Auto-learn -- store scores in scene feedback
     if conn:
         _auto_learn_from_review(conn, script, scene_reviews)
 
@@ -401,7 +401,7 @@ def review_rendered_video(script: Script, character: Character, output_dir: Path
 
 
 def _find_reference(character: Character, output_dir: Path) -> Path | None:
-    """Find the best reference portrait — POV reference first, then character ref."""
+    """Find the best reference portrait -- POV reference first, then character ref."""
     pov_ref = output_dir / "images" / "pov_reference.png"
     if pov_ref.exists():
         return pov_ref
@@ -482,7 +482,7 @@ def review_audio_visual_sync(script: Script, voiceover_path: Path) -> list[str]:
                 if abs(time - t_time) < 0.5:
                     issues.append(
                         f"Word '{word}' at {time:.1f}s lands right at scene {t_idx + 1}->{t_idx + 2} "
-                        f"transition ({t_time:.1f}s) — may be cut off"
+                        f"transition ({t_time:.1f}s) -- may be cut off"
                     )
     except Exception:
         pass
@@ -515,7 +515,7 @@ def auto_flag_rerender_from_reviews(scene_reviews: list[SceneReview]) -> list[in
 def print_review(review: VideoReview) -> None:
     """Pretty-print a comprehensive video review."""
     color = "green" if review.overall_score >= 7 else "yellow" if review.overall_score >= 5 else "red"
-    console.print(f"\n[bold]Video Review[/bold] — Overall: [{color}]{review.overall_score}/10[/{color}]")
+    console.print(f"\n[bold]Video Review[/bold] -- Overall: [{color}]{review.overall_score}/10[/{color}]")
 
     # Scene scores table with dimension breakdown
     table = Table(title="Scene Scores")
@@ -529,15 +529,15 @@ def print_review(review: VideoReview) -> None:
     table.add_column("Issues")
     for sr in review.scene_reviews:
         sc = "green" if sr.score >= 7 else "yellow" if sr.score >= 5 else "red"
-        issues_str = "; ".join(sr.issues[:2]) if sr.issues else "—"
+        issues_str = "; ".join(sr.issues[:2]) if sr.issues else "--"
         table.add_row(
             str(sr.scene_index + 1),
             f"[{sc}]{sr.score}/10[/{sc}]",
-            f"{sr.face_consistency}/10" if sr.face_consistency else "—",
-            f"{sr.outfit_accuracy}/10" if sr.outfit_accuracy else "—",
-            f"{sr.background_aliveness}/10" if sr.background_aliveness else "—",
-            f"{sr.body_language}/10" if sr.body_language else "—",
-            f"{sr.lip_sync_quality}/10" if sr.lip_sync_quality else "—",
+            f"{sr.face_consistency}/10" if sr.face_consistency else "--",
+            f"{sr.outfit_accuracy}/10" if sr.outfit_accuracy else "--",
+            f"{sr.background_aliveness}/10" if sr.background_aliveness else "--",
+            f"{sr.body_language}/10" if sr.body_language else "--",
+            f"{sr.lip_sync_quality}/10" if sr.lip_sync_quality else "--",
             issues_str[:50],
         )
     console.print(table)
@@ -554,8 +554,8 @@ def print_review(review: VideoReview) -> None:
             if tr.jarring_jump:
                 issues.append("[yellow]jarring jump[/yellow]")
             status = ", ".join(issues) if issues else "[green]smooth[/green]"
-            notes = f" — {tr.notes}" if tr.notes else ""
-            console.print(f"  Scene {tr.from_scene + 1}→{tr.to_scene + 1}: {status}{notes}")
+            notes = f" -- {tr.notes}" if tr.notes else ""
+            console.print(f"  Scene {tr.from_scene + 1}->{tr.to_scene + 1}: {status}{notes}")
 
     # Sync issues
     if review.sync_issues:
@@ -568,9 +568,9 @@ def print_review(review: VideoReview) -> None:
         s = review.summary
         console.print("\n[bold]Summary Report:[/bold]")
         console.print(f"  Strongest scene: #{s.get('strongest_scene', '?')}"
-                       f" ({s.get('strongest_score', '?')}/10) — {s.get('strongest_reason', '')}")
+                       f" ({s.get('strongest_score', '?')}/10) -- {s.get('strongest_reason', '')}")
         console.print(f"  Weakest scene:   #{s.get('weakest_scene', '?')}"
-                       f" ({s.get('weakest_score', '?')}/10) — {s.get('weakest_reason', '')}")
+                       f" ({s.get('weakest_score', '?')}/10) -- {s.get('weakest_reason', '')}")
 
         if s.get("dimension_averages"):
             dims = s["dimension_averages"]
